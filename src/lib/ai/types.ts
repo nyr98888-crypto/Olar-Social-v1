@@ -1,4 +1,8 @@
-import type { AgentOutput, BrandGuidelines } from "../../../schemas/agent";
+import type {
+  AgentOutput,
+  BrandDna,
+  BrandGuidelines,
+} from "../../../schemas/agent";
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -17,7 +21,10 @@ export interface AgentRequest {
   userMessage: string;
   history: ChatTurn[];
   brandGuidelines: BrandGuidelines | null;
+  /** Niche lock — authoritative for visuals (from profile ± conversation). */
+  brandDna?: BrandDna | null;
   referenceImages?: ReferenceImage[];
+  /** Anti-lock comparison only — never inject into chat history as a template. */
   previousImagePrompt?: string | null;
 }
 

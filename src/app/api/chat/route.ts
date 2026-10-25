@@ -8,7 +8,12 @@ import {
   type ChatTurn,
   type ReferenceImage,
 } from "@/lib/ai/types";
-import type { BrandGuidelines } from "../../../../schemas/agent";
+import {
+  mergeBrandDna,
+  parseBrandDnaPartial,
+  type BrandDna,
+  type BrandGuidelines,
+} from "../../../../schemas/agent";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -17,6 +22,9 @@ interface ChatBody {
   conversationId?: string;
   message: string;
   brandGuidelines?: BrandGuidelines | null;
+  /** Guest / client: Niche Lock DNA */
+  brandDna?: BrandDna | null;
+  brand_dna?: BrandDna | null;
   /** Guest mode: client-held sliding window (no DB). */
   history?: ChatTurn[];
   /** Guest mode: last image prompt for anti-lock. */
@@ -44,6 +52,9 @@ export async function POST(request: Request) {
       referenceImages: body.referenceImages,
     });
 
+    const bodyDna =
+      parseBrandDnaPartial(body.brandDna ?? body.brand_dna) ?? null;
+
     // —— Guest / local: no Supabase persistence ——
     if (session.mode === "guest") {
       const history = Array.isArray(body.history) ? body.history.slice(-20) : [];
@@ -56,6 +67,7 @@ export async function POST(request: Request) {
         userMessage: body.message.trim(),
         history,
         brandGuidelines: body.brandGuidelines ?? null,
+        brandDna: mergeBrandDna(bodyDna, null),
         referenceImages:
           referenceImages.length > 0 ? referenceImages : undefined,
         previousImagePrompt: body.previousImagePrompt ?? null,
@@ -92,15 +104,24 @@ export async function POST(request: Request) {
     const supabase = await createClient();
     const userId = session.user.id;
 
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("brand_dna")
+      .eq("id", userId)
+      .maybeSingle();
+
+    const profileDna = parseBrandDnaPartial(profile?.brand_dna) ?? null;
+
     let conversationId = body.conversationId;
     let brandGuidelines: BrandGuidelines | null =
       body.brandGuidelines ?? null;
     let previousImagePrompt: string | null = null;
+    let conversationDna = parseBrandDnaPartial(null);
 
     if (conversationId) {
       const { data: conv, error } = await supabase
         .from("conversations")
-        .select("id, brand_guidelines, last_image_prompt")
+        .select("id, brand_guidelines, brand_dna, last_image_prompt")
         .eq("id", conversationId)
         .eq("user_id", userId)
         .single();
@@ -115,6 +136,7 @@ export async function POST(request: Request) {
         (body.brandGuidelines as BrandGuidelines) ??
         (conv.brand_guidelines as BrandGuidelines) ??
         null;
+      conversationDna = parseBrandDnaPartial(conv.brand_dna);
       previousImagePrompt = conv.last_image_prompt ?? null;
     } else {
       const { data: created, error } = await supabase
@@ -135,6 +157,13 @@ export async function POST(request: Request) {
       conversationId = created.id;
     }
 
+    // Niche lock: conversation override + profile base; body can supply DNA
+    const brandDna = mergeBrandDna(
+      mergeBrandDna(profileDna, conversationDna),
+      bodyDna
+    );
+
+    // Load chat text only — never image_prompt (context bleed prevention)
     const { data: priorMessages } = await supabase
       .from("messages")
       .select("role, content")
@@ -157,6 +186,7 @@ export async function POST(request: Request) {
       userMessage: body.message.trim(),
       history,
       brandGuidelines,
+      brandDna,
       referenceImages:
         referenceImages.length > 0 ? referenceImages : undefined,
       previousImagePrompt,
@@ -191,6 +221,9 @@ export async function POST(request: Request) {
     if (body.brandGuidelines) {
       updates.brand_guidelines = body.brandGuidelines;
     }
+    if (bodyDna) {
+      updates.brand_dna = brandDna ?? bodyDna;
+    }
     if (image?.prompt) {
       updates.last_image_prompt = image.prompt;
     }
@@ -207,6 +240,7 @@ export async function POST(request: Request) {
       output,
       image,
       providerUsed: result.providerUsed,
+      brand_dna: brandDna,
       status: image
         ? "generated_visual"
         : result.visionNotes

@@ -1,5 +1,6 @@
 import { AgentOutputSchema, type AgentOutput } from "../../../../schemas/agent";
 import type { ChatTurn } from "../types";
+import { fetchSignal, withTimeout } from "../with-timeout";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 /**
@@ -7,6 +8,7 @@ const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
  * Official replacement: openai/gpt-oss-120b (still on api.groq.com OpenAI path).
  */
 const GROQ_MODEL = "openai/gpt-oss-120b";
+const REQUEST_TIMEOUT_MS = 25_000;
 
 function extractJson(text: string): unknown {
   const trimmed = text.trim().replace(/^```json\s*/i, "").replace(/```$/i, "");
@@ -30,22 +32,27 @@ export async function generateWithGroq(
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("GROQ_API_KEY is missing");
 
-  const res = await fetch(GROQ_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      temperature: 0.7,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: system },
-        ...messages.map((m) => ({ role: m.role, content: m.content })),
-      ],
+  const res = await withTimeout(
+    fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        temperature: 0.7,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          ...messages.map((m) => ({ role: m.role, content: m.content })),
+        ],
+      }),
+      signal: fetchSignal(REQUEST_TIMEOUT_MS),
     }),
-  });
+    REQUEST_TIMEOUT_MS + 2_000,
+    "Groq"
+  );
 
   if (!res.ok) {
     const body = await res.text();

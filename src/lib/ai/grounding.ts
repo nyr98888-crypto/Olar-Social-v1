@@ -1,21 +1,29 @@
-import type { AgentOutput, BrandGuidelines } from "../../../schemas/agent";
+import type {
+  AgentOutput,
+  BrandDna,
+  BrandGuidelines,
+} from "../../../schemas/agent";
+import { isBrandDnaComplete } from "../../../schemas/agent";
 import { hasLockedSceneLeak, type ChatTurn } from "./types";
+import { findForbiddenHits } from "./validator";
 
 /**
  * Light post-validate helpers for the publication pipeline.
- * Goal: stop invented prices / phones / discounts / locked scenes from shipping.
+ * Goal: stop invented prices / phones / discounts / locked scenes / niche leaks from shipping.
  * Keep pragmatic — not a full NLP fact-checker.
  */
 
 export function buildGroundingCorpus(args: {
   userMessage: string;
   brand: BrandGuidelines | null;
+  brandDna?: BrandDna | null;
   visionNotes: string | null;
   history: ChatTurn[];
 }): string {
   const parts = [
     args.userMessage,
     args.brand ? JSON.stringify(args.brand) : "",
+    args.brandDna ? JSON.stringify(args.brandDna) : "",
     args.visionNotes ?? "",
     ...args.history.map((t) => t.content),
   ];
@@ -67,12 +75,14 @@ export function socialPostHasUngroundedClaims(
 /**
  * Enforce text-only / missing-info contracts and strip ungrounded campaign claims.
  * Mutates and returns the same output object.
+ * Aligns with Niche Lock: incomplete Brand DNA → ask business type before visuals.
  */
 export function enforcePublicationGrounding(
   output: AgentOutput,
   args: {
     userMessage: string;
     brand: BrandGuidelines | null;
+    brandDna?: BrandDna | null;
     visionNotes: string | null;
     history: ChatTurn[];
   }
@@ -82,6 +92,19 @@ export function enforcePublicationGrounding(
     output.social_post = null;
     output.image_task.generate_image = false;
     return output;
+  }
+
+  // Niche Lock incomplete: visuals require business_type + allowed_visual_style
+  if (output.image_task.generate_image && !isBrandDnaComplete(args.brandDna)) {
+    output.image_task.generate_image = false;
+    delete output.image_task.prompt;
+    // Keep social_post if grounded; nudge for business type so Niche Lock can be set
+    if (!output.chat_reply?.includes("סוג העסק")) {
+      output.chat_reply = `${output.chat_reply?.trim() ?? ""}\n\nלפני ויז'ואל — מה סוג העסק? (למשל מוסך, קוסמטיקאית, רואה חשבון)`.trim();
+    }
+    if (!output.social_post) {
+      output.intent = "missing_info";
+    }
   }
 
   const grounding = buildGroundingCorpus(args);
@@ -101,14 +124,23 @@ export function enforcePublicationGrounding(
     return output;
   }
 
-  // Block locked stock scenes from ever reaching FAL
-  if (
-    output.image_task.generate_image &&
-    output.image_task.prompt &&
-    hasLockedSceneLeak(output.image_task.prompt)
-  ) {
-    output.image_task.generate_image = false;
-    delete output.image_task.prompt;
+  // Block locked stock scenes + Brand DNA forbidden_elements from ever reaching FAL
+  if (output.image_task.generate_image && output.image_task.prompt) {
+    const prompt = output.image_task.prompt;
+    const nicheHits = findForbiddenHits(
+      prompt,
+      args.brandDna?.forbidden_elements
+    );
+    if (hasLockedSceneLeak(prompt) || nicheHits.length > 0) {
+      // Leave generate_image true so router Prompt Guardrail can retry LLM;
+      // only strip here when we are not going to retry (router owns retry).
+      // Soft-flag: keep prompt for guardrail correction path.
+      if (hasLockedSceneLeak(prompt) && nicheHits.length === 0) {
+        // Legacy locked scenes without DNA list — block immediately
+        output.image_task.generate_image = false;
+        delete output.image_task.prompt;
+      }
+    }
   }
 
   return output;
