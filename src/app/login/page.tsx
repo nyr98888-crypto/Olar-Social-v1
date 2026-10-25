@@ -44,7 +44,6 @@ export default function LoginPage() {
   }
 
   async function continueAsGuest() {
-    if (configured) return;
     setGuestLoading(true);
     setError(null);
     try {
@@ -115,19 +114,20 @@ export default function LoginPage() {
               : "המשך עם Google"}
         </button>
 
-        {!configured && (
-          <button
-            type="button"
-            onClick={continueAsGuest}
-            disabled={guestLoading}
-            className="mt-3 flex min-h-12 w-full items-center justify-center rounded-2xl border border-line bg-panel px-5 py-3.5 text-base font-medium text-ink transition hover:border-accent hover:text-accent active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm"
-          >
-            {guestLoading ? "נכנסת כאורח..." : "המשך כאורח"}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={continueAsGuest}
+          disabled={guestLoading || loading}
+          className="mt-3 flex min-h-12 w-full items-center justify-center rounded-2xl border-2 border-ink bg-panel px-5 py-3.5 text-base font-medium text-ink transition hover:bg-ink hover:text-panel active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm"
+        >
+          {guestLoading ? "נכנסת כאורח..." : "המשך כאורח"}
+        </button>
+        <p className="mt-2 text-center text-xs text-ink-soft">
+          כניסה מהירה בלי Google — השיחה נשמרת רק בזמן הסשן הנוכחי
+        </p>
 
         {error && (
-          <p className="mt-4 text-sm text-danger" role="alert">
+          <p className="mt-4 text-sm text-danger whitespace-pre-line" role="alert">
             {error}
           </p>
         )}
@@ -139,6 +139,17 @@ export default function LoginPage() {
 /** Soften raw network/DNS dumps into actionable Hebrew. */
 function friendlyAuthError(raw: string): string {
   const lower = raw.toLowerCase();
+  if (
+    lower.includes("provider is not enabled") ||
+    lower.includes("unsupported provider") ||
+    lower.includes("validation_failed")
+  ) {
+    return (
+      "Google לא מופעל בפרויקט Supabase — Authentication → Providers → Google → Enable " +
+      "(+ Client ID/Secret מ-Google Cloud).\n" +
+      "Redirect: http://localhost:3001/auth/callback (ובפרודקשן את כתובת Vercel)."
+    );
+  }
   if (
     lower.includes("err_name_not_resolved") ||
     lower.includes("name_not_resolved") ||

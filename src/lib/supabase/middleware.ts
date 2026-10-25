@@ -9,14 +9,17 @@ type CookieToSet = {
   options?: CookieOptions;
 };
 
+function isGuestRequest(request: NextRequest): boolean {
+  return request.cookies.get(GUEST_COOKIE)?.value === GUEST_COOKIE_VALUE;
+}
+
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
+  const path = request.nextUrl.pathname;
+  const isGuest = isGuestRequest(request);
 
-  // No Supabase keys: local guest gate only (never a production bypass).
+  // No Supabase keys: guest cookie gate only.
   if (!isSupabaseConfigured()) {
-    const isGuest =
-      request.cookies.get(GUEST_COOKIE)?.value === GUEST_COOKIE_VALUE;
-    const path = request.nextUrl.pathname;
     const isAuthRoute =
       path.startsWith("/login") ||
       path.startsWith("/auth") ||
@@ -67,16 +70,25 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const isAuthRoute =
-    request.nextUrl.pathname.startsWith("/login") ||
-    request.nextUrl.pathname.startsWith("/auth");
+    path.startsWith("/login") || path.startsWith("/auth");
 
-  if (!user && !isAuthRoute && request.nextUrl.pathname === "/") {
+  // Guest cookie lets users into workspace without Google.
+  if (!user && isGuest) {
+    if (path === "/login") {
+      const redirectUrl = request.nextUrl.clone();
+      redirectUrl.pathname = "/";
+      return NextResponse.redirect(redirectUrl);
+    }
+    return supabaseResponse;
+  }
+
+  if (!user && !isAuthRoute && path === "/") {
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = "/login";
     return NextResponse.redirect(redirectUrl);
   }
 
-  if (user && request.nextUrl.pathname === "/login") {
+  if (user && path === "/login") {
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = "/";
     return NextResponse.redirect(redirectUrl);

@@ -1,7 +1,6 @@
 import { cookies } from "next/headers";
-import { isSupabaseConfigured } from "@/lib/supabase/config";
 
-/** Cookie flag for local guest/dev sessions. Only valid when Supabase is unset. */
+/** Cookie flag for local guest sessions — always available as secondary access. */
 export const GUEST_COOKIE = "yona_guest_mode";
 export const GUEST_COOKIE_VALUE = "1";
 
@@ -12,12 +11,12 @@ export const GUEST_USER = {
   avatarUrl: null as string | null,
 } as const;
 
+/** Guest entry is always allowed (quick access / Google unavailable). */
 export function isGuestModeAllowed(): boolean {
-  return !isSupabaseConfigured();
+  return true;
 }
 
 export async function hasGuestCookie(): Promise<boolean> {
-  if (!isGuestModeAllowed()) return false;
   const store = await cookies();
   return store.get(GUEST_COOKIE)?.value === GUEST_COOKIE_VALUE;
 }
