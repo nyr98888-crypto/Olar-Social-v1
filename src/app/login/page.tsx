@@ -28,17 +28,17 @@ export default function LoginPage() {
         },
       });
       if (authError) {
-        setError(authError.message);
+        setError(friendlyAuthError(authError.message));
         setLoading(false);
       }
     } catch (err) {
-      const message =
+      const raw =
         err instanceof SupabaseConfigError
           ? err.message
           : err instanceof Error
             ? err.message
             : "שגיאה בהתחברות";
-      setError(message);
+      setError(friendlyAuthError(raw));
       setLoading(false);
     }
   }
@@ -134,6 +134,28 @@ export default function LoginPage() {
       </section>
     </main>
   );
+}
+
+/** Soften raw network/DNS dumps into actionable Hebrew. */
+function friendlyAuthError(raw: string): string {
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("err_name_not_resolved") ||
+    lower.includes("name_not_resolved") ||
+    lower.includes("could not reach") ||
+    lower.includes("can't connect to server") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("networkerror") ||
+    lower.includes("getaddrinfo") ||
+    lower.includes("enotfound") ||
+    /\(-105\)/.test(raw)
+  ) {
+    return "לא מצליחים להגיע לפרויקט Supabase (כתובת לא נפתרת ב־DNS). בדקו ב־Dashboard → Settings → API שה־Project URL מדויק, עדכנו .env.local, והפעילו מחדש את השרת.";
+  }
+  if (raw.includes("Missing NEXT_PUBLIC_SUPABASE")) {
+    return "חסרים מפתחות Supabase ב־.env.local — הדביקו Project URL + anon key מה־Dashboard והפעילו מחדש.";
+  }
+  return raw;
 }
 
 function GoogleIcon() {
