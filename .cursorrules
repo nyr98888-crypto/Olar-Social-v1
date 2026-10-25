@@ -1,0 +1,47 @@
+# יונה - סוכנת סושיאל | Development Rules (Production)
+
+## Zero Hardcoded Visuals
+- חל איסור מוחלט על שימוש ב-Prompt קבוע או דוגמאות ויזואליות קבועות מראש.
+- אין Seed קבוע, אין פרומפט ברירת-מחדל של מוסך/מוצר/סצנה, ואין דוגמאות "placeholder" שדולפות ל-FAL.
+- כל פרומפט תמונה נוצר דינמית מתוך כוונת המשתמש + brand_guidelines + תיאור רפרנס (אם קיים).
+
+## FAL.ai Seed
+- כל קריאה ל-FAL.ai חייבת לכלול Seed רנדומלי לחלוטין:
+  `Math.floor(Math.random() * 10000000)`
+- לפני יצירה: ודא שה-prompt אינו זהה לפרומפט הקודם של אותה שיחה (anti-lock).
+
+## Structured Output Separation
+- הפרדה מוחלטת בפלט: טקסט השיחה של יונה מופרד לחלוטין מפרמטרי הפוסט והתמונה.
+- השתמש אך ורק בסכמת Zod ב-`schemas/agent.ts` (`AgentOutputSchema`).
+- אין לערבב `chat_reply` עם שדות `social_post` / `image_task` באותו מחרוזת גולמית.
+
+## Sliding Window + System State
+- הזרק למודל רק את 6 התורות האחרונים של השיחה (Sliding Window).
+- קווי היסוד של המותג (`brand_guidelines`) נשמרים כאובייקט System State נפרד — לא בטקסט השיחה הגולמי.
+- אין Context Bleed: אל תשלח היסטוריית תמונות/פרומפטים ישנים כחלק מהודעות הצ'אט.
+
+## Text-Only Handling
+- אם המשתמש מנהל שיחה ללא בקשה מפורשת לקמפיין/תמונה:
+  `image_task.generate_image` חייב להיות `false`.
+- בשיחת chit_chat: `social_post` יהיה `null`.
+
+## Auth & Persistence
+- כל שמירת נתונים ומצב קשורה ל-User ID מאומת.
+- נתונים נשמרים במסד נתונים (Supabase) כך שריענון (F5) ישחזר את המסך במלואו:
+  שיחה אחרונה, הודעות, פוסט אחרון, ותמונה אחרונה.
+
+## Provider chain (authoritative — enforce in router.ts)
+1. **Text / structured JSON (always):** OpenRouter PRIMARY — `anthropic/claude-3.5-haiku`, then `openai/gpt-4o-mini` if needed. Never prefer Groq/Gemini for normal chat.
+2. **Backup text only:** Groq `openai/gpt-oss-120b`, then Gemini Flash — ONLY after OpenRouter failure (error/429/5xx).
+3. **Images:** FAL.ai `fal-ai/flux/schnell` only when `generate_image === true`. Never Gemini for image generation.
+4. **Vision (reference uploads only):** Gemini Flash (`gemini-3.5-flash`, fallbacks `gemini-3-flash-preview` / `gemini-flash-latest`) for an English visual brief. Soft-skip on 503/failure and continue OpenRouter text — do not crash.
+
+## Model IDs (Production — exact strings)
+- Text primary: OpenRouter `anthropic/claude-3.5-haiku` (fallback `openai/gpt-4o-mini`)
+- Text backup: Groq `openai/gpt-oss-120b`, then Google AI Studio `gemini-3.5-flash`
+- Vision only: Google AI Studio `gemini-3.5-flash` (+ alternate Flash IDs on 503/429)
+- Images: FAL.ai `fal-ai/flux/schnell`
+
+## Language
+- `chat_reply` ו-`social_post` בעברית.
+- `image_task.prompt` באנגלית בלבד (FAL Flux).

@@ -1,0 +1,35 @@
+{
+  "name": "yona-social-agent",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test:engine": "tsx scripts/test-engine.ts",
+    "test:pipeline": "tsx scripts/test-pipeline.ts",
+    "env:sync": "node scripts/env-sync.mjs"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.4.0",
+    "@google/generative-ai": "^0.24.0",
+    "@supabase/ssr": "^0.6.1",
+    "@supabase/supabase-js": "^2.49.1",
+    "next": "^15.2.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.17",
+    "@types/node": "^22.13.11",
+    "@types/react": "^19.0.12",
+    "@types/react-dom": "^19.0.4",
+    "eslint": "^9.23.0",
+    "eslint-config-next": "^15.2.4",
+    "tailwindcss": "^4.0.17",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

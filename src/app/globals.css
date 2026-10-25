@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #1a1612;
+  --ink-soft: #3d342c;
+  --paper: #f7f3ec;
+  --paper-deep: #ebe4d8;
+  --panel: #fffdf8;
+  --accent: #0f6e56;
+  --accent-hover: #0c5a46;
+  --accent-soft: #d8efe7;
+  --line: #d9d0c2;
+  --danger: #b42318;
+  --yona: #0f6e56;
+  --user-bubble: #1a1612;
+  --shadow: 0 12px 40px rgba(26, 22, 18, 0.08);
+  --font-display: "Frank Ruhl Libre", "Times New Roman", serif;
+  --font-body: "Heebo", "Segoe UI", sans-serif;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-paper: var(--paper);
+  --color-paper-deep: var(--paper-deep);
+  --color-panel: var(--panel);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-line: var(--line);
+  --color-danger: var(--danger);
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1200px 600px at 100% -10%, #d8efe7 0%, transparent 55%),
+    radial-gradient(900px 500px at -10% 110%, #ebe4d8 0%, transparent 50%),
+    var(--paper);
+  -webkit-font-smoothing: antialiased;
+  /* Avoid iOS zoom-on-focus for form controls under 16px */
+  -webkit-text-size-adjust: 100%;
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.animate-rise {
+  animation: rise-in 0.35s ease-out both;
+}
+
+.status-dot {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+.media-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--paper-deep) 0%,
+    #f4efe6 45%,
+    var(--paper-deep) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
