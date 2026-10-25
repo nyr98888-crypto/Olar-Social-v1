@@ -6,6 +6,7 @@ import {
   generateWithGemini,
 } from "./providers/gemini";
 import { generateImageWithFal } from "./providers/fal";
+import { enforcePublicationGrounding } from "./grounding";
 import {
   takeSlidingWindow,
   type AgentPipelineResult,
@@ -111,11 +112,13 @@ export async function runAgentPipeline(
 
   const { output, providerUsed } = await runStructuredAgent(system, messages);
 
-  // Enforce text-only safety
-  if (output.intent === "chit_chat") {
-    output.social_post = null;
-    output.image_task.generate_image = false;
-  }
+  // Publication guardrails: chit_chat / missing_info contracts + strip ungrounded claims
+  enforcePublicationGrounding(output, {
+    userMessage: req.userMessage,
+    brand: req.brandGuidelines,
+    visionNotes,
+    history: windowed,
+  });
 
   let image = null;
   if (output.image_task.generate_image && output.image_task.prompt) {
