@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { AppHeader, type ConnectionState } from "@/components/AppHeader";
 import { ChatPanel } from "@/components/ChatPanel";
 import { SocialPreview } from "@/components/SocialPreview";
+import { useYonaVoice } from "@/hooks/useYonaVoice";
 import type { LiveStatus, SocialPost, UiMessage } from "@/lib/types/ui";
 import { DEFAULT_CHAT_ERROR_HE } from "@/lib/types/ui";
 
@@ -153,9 +154,39 @@ export function YonaWorkspace({
     setPreviews(next.map((f) => URL.createObjectURL(f)));
   };
 
-  const onSend = async () => {
-    const text = input.trim();
+  const speakRef = useRef<(text: string) => void>(() => {});
+  const stopSpeakingRef = useRef<() => void>(() => {});
+  const onSendRef = useRef<(overrideText?: string) => Promise<void>>(
+    async () => {}
+  );
+
+  const chatBusy = status !== "idle" && status !== "error";
+
+  const {
+    listening,
+    interim,
+    muted: voiceMuted,
+    toggleListening,
+    speak,
+    stopSpeaking,
+    toggleMute,
+  } = useYonaVoice({
+    disabled: chatBusy,
+    onFinalTranscript: (text) => {
+      setInput(text);
+      void onSendRef.current(text);
+    },
+    onVoiceError: (messageHe) => showError(messageHe),
+  });
+
+  speakRef.current = speak;
+  stopSpeakingRef.current = stopSpeaking;
+
+  const onSend = async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text) return;
+
+    stopSpeakingRef.current();
 
     const tempId = `local-${Date.now()}`;
     setMessages((prev) => [
@@ -228,11 +259,19 @@ export function YonaWorkspace({
         setLastImagePrompt(data.image.prompt);
       }
       setStatus("idle");
+
+      const reply =
+        (typeof data.output?.chat_reply === "string" && data.output.chat_reply) ||
+        assistant?.content ||
+        "";
+      if (reply) speakRef.current(reply);
     } catch (e) {
       console.error("[chat]", e);
       showError(DEFAULT_CHAT_ERROR_HE);
     }
   };
+
+  onSendRef.current = onSend;
 
   const onRegenerate = async () => {
     if (!conversationId || !lastImagePrompt) return;
@@ -350,7 +389,12 @@ export function YonaWorkspace({
             onInputChange={setInput}
             onPickImages={onPickImages}
             onRemovePreview={onRemovePreview}
-            onSend={onSend}
+            onSend={() => void onSend()}
+            listening={listening}
+            interimTranscript={interim}
+            voiceMuted={voiceMuted}
+            onToggleMic={toggleListening}
+            onToggleMute={toggleMute}
           />
         </div>
         <div
