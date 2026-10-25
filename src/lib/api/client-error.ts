@@ -22,6 +22,21 @@ export function toClientErrorPayload(err: unknown): {
     };
   }
 
+  if (/timed out|ETIMEDOUT|AbortError|aborted/i.test(raw)) {
+    return {
+      error: "The request took too long. Please try again.",
+      error_he: "הבקשה ארכה יותר מדי. נסי שוב.",
+    };
+  }
+
+  if (/\b(502|504)\b/.test(raw) || /bad gateway|gateway timeout/i.test(raw)) {
+    return {
+      error: "The server is warming up or temporarily unavailable.",
+      error_he:
+        "השרת מתעורר או זמנית לא זמין (cold start). נסי שוב בעוד כמה שניות.",
+    };
+  }
+
   if (/unauthorized|GEMINI_API_KEY|OPENROUTER_API_KEY|GROQ_API_KEY|FAL_KEY/i.test(raw)) {
     return {
       error: "Service configuration error. Please try again later.",

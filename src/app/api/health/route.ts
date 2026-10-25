@@ -9,12 +9,24 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const started = Date.now();
   try {
-    if (!isSupabaseConfigured()) {
-      const session = await getAppSession();
+    // Prefer unified session (guest cookie OR Supabase user) so guests are not
+    // reported as "offline" when auth.getUser() returns "Auth session missing!".
+    const session = await getAppSession();
+    if (session?.mode === "guest") {
       return NextResponse.json({
         ok: true,
         connected: true,
-        authenticated: session?.mode === "guest",
+        authenticated: true,
+        guestMode: true,
+        latencyMs: Date.now() - started,
+      });
+    }
+
+    if (!isSupabaseConfigured()) {
+      return NextResponse.json({
+        ok: Boolean(session),
+        connected: Boolean(session),
+        authenticated: Boolean(session),
         guestMode: true,
         latencyMs: Date.now() - started,
       });
@@ -26,7 +38,16 @@ export async function GET() {
       error,
     } = await supabase.auth.getUser();
 
-    if (error) {
+    if (error && !user) {
+      // No Supabase user — still "connected" if we somehow have a session
+      if (session) {
+        return NextResponse.json({
+          ok: true,
+          connected: true,
+          authenticated: true,
+          latencyMs: Date.now() - started,
+        });
+      }
       return NextResponse.json(
         {
           ok: false,

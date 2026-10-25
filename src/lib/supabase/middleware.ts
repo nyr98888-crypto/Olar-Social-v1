@@ -13,10 +13,46 @@ function isGuestRequest(request: NextRequest): boolean {
   return request.cookies.get(GUEST_COOKIE)?.value === GUEST_COOKIE_VALUE;
 }
 
+/** Cap Supabase auth probe so a hung DNS/API never freezes every navigation. */
+const AUTH_PROBE_MS = 4_000;
+
+async function getUserWithTimeout(
+  getUser: () => Promise<{ data: { user: unknown } }>
+): Promise<unknown | null> {
+  try {
+    const result = await Promise.race([
+      getUser(),
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error("supabase.auth.getUser timed out")),
+          AUTH_PROBE_MS
+        );
+      }),
+    ]);
+    return result.data.user ?? null;
+  } catch (err) {
+    console.warn(
+      "[middleware] auth.getUser failed/timed out",
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
   const path = request.nextUrl.pathname;
   const isGuest = isGuestRequest(request);
+
+  // Guest cookie: never call Supabase — avoids hangs when Google/env is broken.
+  if (isGuest) {
+    if (path === "/login") {
+      const redirectUrl = request.nextUrl.clone();
+      redirectUrl.pathname = "/";
+      return NextResponse.redirect(redirectUrl);
+    }
+    return supabaseResponse;
+  }
 
   // No Supabase keys: guest cookie gate only.
   if (!isSupabaseConfigured()) {
@@ -29,12 +65,6 @@ export async function updateSession(request: NextRequest) {
     if (!isGuest && path === "/") {
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = "/login";
-      return NextResponse.redirect(redirectUrl);
-    }
-
-    if (isGuest && path === "/login") {
-      const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = "/";
       return NextResponse.redirect(redirectUrl);
     }
 
@@ -65,22 +95,10 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getUserWithTimeout(() => supabase.auth.getUser());
 
   const isAuthRoute =
     path.startsWith("/login") || path.startsWith("/auth");
-
-  // Guest cookie lets users into workspace without Google.
-  if (!user && isGuest) {
-    if (path === "/login") {
-      const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = "/";
-      return NextResponse.redirect(redirectUrl);
-    }
-    return supabaseResponse;
-  }
 
   if (!user && !isAuthRoute && path === "/") {
     const redirectUrl = request.nextUrl.clone();

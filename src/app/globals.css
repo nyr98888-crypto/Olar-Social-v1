@@ -124,6 +124,26 @@ body {
   animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
+@keyframes stream-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.stream-caret {
+  display: inline-block;
+  width: 0.12em;
+  height: 1em;
+  margin-inline-start: 0.12em;
+  vertical-align: -0.12em;
+  background: var(--accent);
+  animation: stream-caret 0.9s steps(1) infinite;
+}
+
 .media-shimmer {
   background: linear-gradient(
     90deg,

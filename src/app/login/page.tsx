@@ -47,14 +47,28 @@ export default function LoginPage() {
     setGuestLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/guest", { method: "POST" });
+      const res = await fetch("/api/guest", {
+        method: "POST",
+        signal: AbortSignal.timeout(12_000),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || "לא ניתן להיכנס כאורח");
       }
       window.location.href = "/";
     } catch (err) {
-      setError(err instanceof Error ? err.message : "שגיאה במצב אורח");
+      const aborted =
+        err instanceof Error &&
+        (err.name === "TimeoutError" ||
+          err.name === "AbortError" ||
+          /timed out|aborted/i.test(err.message));
+      setError(
+        aborted
+          ? "השרת לא הגיב בזמן (cold start). נסי שוב בעוד כמה שניות."
+          : err instanceof Error
+            ? err.message
+            : "שגיאה במצב אורח"
+      );
       setGuestLoading(false);
     }
   }

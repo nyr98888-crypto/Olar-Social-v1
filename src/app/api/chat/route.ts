@@ -63,6 +63,7 @@ export async function POST(request: Request) {
           ? body.conversationId
           : `guest-${Date.now()}`;
 
+      // Defer FAL so mobile/Vercel get chat_reply fast; client follows up for image.
       const result = await runAgentPipeline({
         userMessage: body.message.trim(),
         history,
@@ -71,16 +72,22 @@ export async function POST(request: Request) {
         referenceImages:
           referenceImages.length > 0 ? referenceImages : undefined,
         previousImagePrompt: body.previousImagePrompt ?? null,
+        deferImage: true,
       });
 
       const { output, image } = result;
+      const pendingPrompt =
+        image?.prompt ??
+        (output.image_task.generate_image
+          ? output.image_task.prompt ?? null
+          : null);
       const assistantMsg = {
         id: `guest-msg-${Date.now()}`,
         content: output.chat_reply,
         social_post: output.social_post,
         image_url: image?.url ?? null,
         image_seed: image?.seed ?? null,
-        image_prompt: image?.prompt ?? null,
+        image_prompt: pendingPrompt,
         intent: output.intent,
         created_at: new Date().toISOString(),
       };
@@ -90,6 +97,9 @@ export async function POST(request: Request) {
         message: assistantMsg,
         output,
         image,
+        imagePending: Boolean(
+          !image && output.image_task.generate_image && pendingPrompt
+        ),
         providerUsed: result.providerUsed,
         guestMode: true,
         status: image
@@ -190,9 +200,15 @@ export async function POST(request: Request) {
       referenceImages:
         referenceImages.length > 0 ? referenceImages : undefined,
       previousImagePrompt,
+      deferImage: true,
     });
 
     const { output, image } = result;
+    const pendingPrompt =
+      image?.prompt ??
+      (output.image_task.generate_image
+        ? output.image_task.prompt ?? null
+        : null);
 
     const { data: assistantMsg, error: msgErr } = await supabase
       .from("messages")
@@ -203,11 +219,11 @@ export async function POST(request: Request) {
         social_post: output.social_post,
         image_url: image?.url ?? null,
         image_seed: image?.seed ?? null,
-        image_prompt: image?.prompt ?? null,
+        image_prompt: pendingPrompt,
         intent: output.intent,
       })
       .select(
-        "id, content, social_post, image_url, image_seed, intent, created_at"
+        "id, content, social_post, image_url, image_seed, image_prompt, intent, created_at"
       )
       .single();
 
@@ -224,8 +240,8 @@ export async function POST(request: Request) {
     if (bodyDna) {
       updates.brand_dna = brandDna ?? bodyDna;
     }
-    if (image?.prompt) {
-      updates.last_image_prompt = image.prompt;
+    if (pendingPrompt) {
+      updates.last_image_prompt = pendingPrompt;
     }
 
     await supabase
@@ -239,6 +255,9 @@ export async function POST(request: Request) {
       message: assistantMsg,
       output,
       image,
+      imagePending: Boolean(
+        !image && output.image_task.generate_image && pendingPrompt
+      ),
       providerUsed: result.providerUsed,
       brand_dna: brandDna,
       status: image

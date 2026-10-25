@@ -10,8 +10,12 @@ import { findForbiddenHits } from "../validator";
 import { withTimeout } from "../with-timeout";
 
 const FAL_MODEL = "fal-ai/flux/schnell";
-/** Hard cap so FAL queue stalls never freeze chat until Vercel kills the route. */
-const FAL_SUBSCRIBE_TIMEOUT_MS = 45_000;
+/**
+ * Hard cap so FAL queue stalls never freeze chat until Vercel kills the route.
+ * Kept under client UX timeout (~45s) and Vercel maxDuration (60s) with headroom
+ * for the preceding LLM call when image is not deferred.
+ */
+const FAL_SUBSCRIBE_TIMEOUT_MS = 28_000;
 
 const ASPECT_TO_SIZE: Record<string, { width: number; height: number }> = {
   "1:1": { width: 1024, height: 1024 },

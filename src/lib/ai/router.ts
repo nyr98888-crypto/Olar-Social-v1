@@ -1,5 +1,8 @@
 import { buildSystemPrompt } from "./system-prompt";
-import { generateWithOpenRouter } from "./providers/openrouter";
+import {
+  generateWithOpenRouter,
+  streamWithOpenRouter,
+} from "./providers/openrouter";
 import { generateWithGroq } from "./providers/groq";
 import {
   analyzeReferenceImages,
@@ -22,11 +25,22 @@ import {
 import type { AgentOutput, BrandDna } from "../../../schemas/agent";
 import { isBrandDnaComplete } from "../../../schemas/agent";
 
+/** Live SSE / stream pipeline events (Phase A tokens → B output → C image). */
+export type AgentStreamEvent =
+  | {
+      type: "status";
+      status: "analyzing" | "thinking" | "streaming" | "generating";
+    }
+  | { type: "token"; text: string }
+  | { type: "output"; output: AgentOutput; providerUsed: string }
+  | { type: "image"; image: GeneratedImage }
+  | { type: "reply_fix"; text: string };
+
 /**
  * Authoritative provider chain
  * ────────────────────────────
  * TEXT / structured JSON (always):
- *   1) OpenRouter PRIMARY — anthropic/claude-3.5-haiku → openai/gpt-4o-mini
+ *   1) OpenRouter PRIMARY — anthropic/claude-haiku-5.5 → openai/gpt-4o-mini
  *   2) Groq openai/gpt-oss-120b — ONLY if OpenRouter fails (error/429/5xx)
  *   3) Gemini Flash — ONLY if Groq also fails (text backup, never preferred)
  *
@@ -266,6 +280,9 @@ export async function runAgentPipeline(
         output,
         "עצרתי את יצירת התמונה — הפרומפט לא עמד בכללי הנישה."
       );
+    } else if (req.deferImage) {
+      // Chat returns first; client/stream Phase C fetches FAL separately.
+      image = null;
     } else {
       try {
         image = await generateImageWithFal({
@@ -284,6 +301,163 @@ export async function runAgentPipeline(
           output,
           "לא הצלחתי לייצר ויז'ואל הפעם — אפשר לנסות שוב."
         );
+        image = null;
+      }
+    }
+  }
+
+  return {
+    output,
+    image,
+    providerUsed,
+    visionNotes,
+  };
+}
+
+/**
+ * Streaming pipeline (additive — used by /api/chat/stream):
+ * Phase A: stream chat_reply tokens from OpenRouter (or one-shot on failover)
+ * Phase B: Zod-validated AgentOutput + grounding + Niche Lock guardrail
+ * Phase C: FAL image async (emit generating status; does not block chat bubble)
+ */
+export async function runAgentPipelineStream(
+  req: AgentRequest,
+  emit: (event: AgentStreamEvent) => void
+): Promise<AgentPipelineResult> {
+  let visionNotes: string | null = null;
+
+  if (req.referenceImages && req.referenceImages.length > 0) {
+    emit({ type: "status", status: "analyzing" });
+    try {
+      visionNotes = await analyzeReferenceImages(req.referenceImages);
+    } catch (err) {
+      console.warn(
+        "[router] Vision analysis failed — continuing without notes",
+        err instanceof Error ? err.message : err
+      );
+      visionNotes = null;
+    }
+  }
+
+  const brandDna = req.brandDna ?? null;
+  const system = buildSystemPrompt(
+    req.brandGuidelines,
+    visionNotes,
+    req.previousImagePrompt ?? null,
+    brandDna
+  );
+
+  const windowed = takeSlidingWindow(req.history);
+  const messages: ChatTurn[] = [
+    ...windowed,
+    { role: "user", content: req.userMessage },
+  ];
+
+  emit({ type: "status", status: "streaming" });
+
+  let streamedReply = "";
+  let output: AgentOutput;
+  let providerUsed: string;
+
+  try {
+    const streamed = await streamWithOpenRouter(system, messages, (delta) => {
+      streamedReply += delta;
+      emit({ type: "token", text: delta });
+    });
+    output = streamed.output;
+    providerUsed = `openrouter:${streamed.model}`;
+  } catch (err) {
+    console.warn(
+      "[router] OpenRouter stream failed → non-stream failover",
+      err instanceof Error ? err.message : err
+    );
+    emit({ type: "status", status: "thinking" });
+    const fallback = await runStructuredAgent(system, messages);
+    output = fallback.output;
+    providerUsed = fallback.providerUsed;
+    if (output.chat_reply) {
+      emit({ type: "token", text: output.chat_reply });
+      streamedReply = output.chat_reply;
+    }
+  }
+
+  // Prefer the live-streamed Hebrew reply when grounding leaves it intact
+  if (streamedReply.trim() && !output.chat_reply?.trim()) {
+    output.chat_reply = streamedReply;
+  }
+
+  enforcePublicationGrounding(output, {
+    userMessage: req.userMessage,
+    brand: req.brandGuidelines,
+    brandDna,
+    visionNotes,
+    history: windowed,
+  });
+
+  const guarded = await enforcePromptGuardrailBeforeFal(output, {
+    system,
+    messages,
+    brandDna,
+    brandGuidelines: req.brandGuidelines,
+    visionNotes,
+    userMessage: req.userMessage,
+    history: windowed,
+  });
+  output = guarded.output;
+  if (guarded.providerUsed) {
+    providerUsed = `${providerUsed}+guard:${guarded.providerUsed}`;
+  }
+
+  // Sync bubble if grounding/guardrail altered the reply
+  if (
+    output.chat_reply &&
+    streamedReply &&
+    output.chat_reply !== streamedReply
+  ) {
+    emit({ type: "reply_fix", text: output.chat_reply });
+  }
+
+  emit({ type: "output", output, providerUsed });
+
+  let image: GeneratedImage | null = null;
+  if (output.image_task.generate_image && output.image_task.prompt) {
+    const finalCheck = validateImagePrompt(output.image_task.prompt, brandDna);
+    if (!finalCheck.ok) {
+      console.warn("[router] Final guardrail blocked FAL", finalCheck.hits);
+      skipImageGeneration(
+        output,
+        "עצרתי את יצירת התמונה — הפרומפט לא עמד בכללי הנישה."
+      );
+      if (output.chat_reply !== streamedReply) {
+        emit({ type: "reply_fix", text: output.chat_reply });
+      }
+      emit({ type: "output", output, providerUsed });
+    } else if (req.deferImage) {
+      // Close SSE after chat; client POSTs /api/regenerate-image (mobile-safe).
+      emit({ type: "status", status: "generating" });
+      image = null;
+    } else {
+      emit({ type: "status", status: "generating" });
+      try {
+        image = await generateImageWithFal({
+          prompt: output.image_task.prompt,
+          aspectRatio: output.image_task.aspect_ratio,
+          previousPrompt: req.previousImagePrompt,
+          userContext: req.userMessage,
+          brandDna,
+        });
+        emit({ type: "image", image });
+      } catch (falErr) {
+        console.error(
+          "[router] FAL failed",
+          falErr instanceof Error ? falErr.message : falErr
+        );
+        skipImageGeneration(
+          output,
+          "לא הצלחתי לייצר ויז'ואל הפעם — אפשר לנסות שוב."
+        );
+        emit({ type: "reply_fix", text: output.chat_reply });
+        emit({ type: "output", output, providerUsed });
         image = null;
       }
     }

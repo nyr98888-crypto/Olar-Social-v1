@@ -31,13 +31,13 @@
   שיחה אחרונה, הודעות, פוסט אחרון, ותמונה אחרונה.
 
 ## Provider chain (authoritative — enforce in router.ts)
-1. **Text / structured JSON (always):** OpenRouter PRIMARY — `anthropic/claude-3.5-haiku`, then `openai/gpt-4o-mini` if needed. Never prefer Groq/Gemini for normal chat.
+1. **Text / structured JSON (always):** OpenRouter PRIMARY — `anthropic/claude-haiku-5.5`, then `openai/gpt-4o-mini` if needed. Never prefer Groq/Gemini for normal chat.
 2. **Backup text only:** Groq `openai/gpt-oss-120b`, then Gemini Flash — ONLY after OpenRouter failure (error/429/5xx).
-3. **Images:** FAL.ai `fal-ai/flux/schnell` only when `generate_image === true`. Never Gemini for image generation.
+3. **Images:** FAL.ai `fal-ai/flux/schnell` only when `generate_image === true`. Never Gemini for image generation. Hard timeout (~45s) — never block chat forever on FAL.
 4. **Vision (reference uploads only):** Gemini Flash (`gemini-3.5-flash`, fallbacks `gemini-3-flash-preview` / `gemini-flash-latest`) for an English visual brief. Soft-skip on 503/failure and continue OpenRouter text — do not crash.
 
 ## Model IDs (Production — exact strings)
-- Text primary: OpenRouter `anthropic/claude-3.5-haiku` (fallback `openai/gpt-4o-mini`)
+- Text primary: OpenRouter `anthropic/claude-haiku-5.5` (fallback `openai/gpt-4o-mini`) — note: `anthropic/claude-3.5-haiku` is retired (404)
 - Text backup: Groq `openai/gpt-oss-120b`, then Google AI Studio `gemini-3.5-flash`
 - Vision only: Google AI Studio `gemini-3.5-flash` (+ alternate Flash IDs on 503/429)
 - Images: FAL.ai `fal-ai/flux/schnell`

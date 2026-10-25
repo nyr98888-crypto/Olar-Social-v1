@@ -7,7 +7,8 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 /** Current Haiku on OpenRouter (claude-3.5-haiku retired — 404). */
 const PRIMARY_MODEL = "anthropic/claude-haiku-5.5";
 const SECONDARY_MODEL = "openai/gpt-4o-mini";
-const REQUEST_TIMEOUT_MS = 28_000;
+/** Per-model hard cap — fail over fast instead of hanging the route. */
+const REQUEST_TIMEOUT_MS = 22_000;
 
 function extractJson(text: string): unknown {
   const trimmed = text.trim();
@@ -117,7 +118,8 @@ export async function generateWithOpenRouter(
 
 export type OpenRouterTokenCallback = (delta: string) => void;
 
-const STREAM_TIMEOUT_MS = 45_000;
+/** Stream open + first bytes; body read still bounded by route maxDuration. */
+const STREAM_TIMEOUT_MS = 35_000;
 
 async function streamOpenRouterModel(
   model: string,

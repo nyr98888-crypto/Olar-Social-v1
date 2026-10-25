@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { AgentOutputSchema, type AgentOutput } from "../../../../schemas/agent";
 import type { ChatTurn, ReferenceImage } from "../types";
+import { withTimeout } from "../with-timeout";
 
 /** Preferred Flash ID; alternates used only after 503/429 / hard failure. */
 const GEMINI_MODEL = "gemini-3.5-flash";
@@ -9,6 +10,8 @@ const GEMINI_MODEL_FALLBACKS = [
   "gemini-3-flash-preview",
   "gemini-flash-latest",
 ] as const;
+/** Cap total vision/text-backup thrashing so 503 loops cannot freeze chat. */
+const GEMINI_OVERALL_TIMEOUT_MS = 14_000;
 
 /** Prefer GEMINI_API_KEY; fall back to GOOGLE_AI_API_KEY for existing envs. */
 export function getGeminiApiKey(): string {
@@ -45,31 +48,37 @@ function isRetryableGeminiError(err: unknown): boolean {
 async function withGeminiResilience<T>(
   fn: (modelId: string) => Promise<T>
 ): Promise<T> {
-  let lastError: unknown;
-
-  for (const modelId of GEMINI_MODEL_FALLBACKS) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        return await fn(modelId);
-      } catch (err) {
-        lastError = err;
-        const retryable = isRetryableGeminiError(err);
-        console.warn(
-          `[gemini] ${modelId} attempt ${attempt + 1} failed`,
-          err instanceof Error ? err.message : err
-        );
-        if (retryable && attempt === 0) {
-          await sleep(600 + Math.floor(Math.random() * 400));
-          continue;
+  const run = async () => {
+    let lastError: unknown;
+    // One retry on primary only, then single attempt per fallback — avoid 30s+ hangs
+    for (let i = 0; i < GEMINI_MODEL_FALLBACKS.length; i++) {
+      const modelId = GEMINI_MODEL_FALLBACKS[i];
+      const attempts = i === 0 ? 2 : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        try {
+          return await fn(modelId);
+        } catch (err) {
+          lastError = err;
+          const retryable = isRetryableGeminiError(err);
+          console.warn(
+            `[gemini] ${modelId} attempt ${attempt + 1} failed`,
+            err instanceof Error ? err.message : err
+          );
+          if (retryable && attempt === 0 && attempts > 1) {
+            await sleep(400 + Math.floor(Math.random() * 300));
+            continue;
+          }
+          break;
         }
-        break;
       }
     }
-  }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Gemini unavailable");
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Gemini unavailable");
+  };
+
+  return withTimeout(run(), GEMINI_OVERALL_TIMEOUT_MS, "Gemini");
 }
 
 function extractJson(text: string): unknown {

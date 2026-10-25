@@ -19,6 +19,7 @@ export interface UiMessage {
 export type LiveStatus =
   | "idle"
   | "thinking"
+  | "streaming"
   | "analyzing"
   | "generating"
   | "error";
@@ -26,6 +27,7 @@ export type LiveStatus =
 export const STATUS_LABELS: Record<LiveStatus, string> = {
   idle: "",
   thinking: "יונה חושבת...",
+  streaming: "",
   analyzing: "מנתחת תמונות...",
   generating: "מייצרת ויז'ואל...",
   error: "משהו השתבש, נסי שוב",

@@ -9,6 +9,8 @@ interface ChatPanelProps {
   status: LiveStatus;
   /** Optional Hebrew toast overriding STATUS_LABELS.error */
   statusMessage?: string | null;
+  /** Assistant bubble id currently receiving streamed tokens */
+  streamingMessageId?: string | null;
   input: string;
   previews: string[];
   onInputChange: (v: string) => void;
@@ -27,6 +29,7 @@ export function ChatPanel({
   messages,
   status,
   statusMessage,
+  streamingMessageId = null,
   input,
   previews,
   onInputChange,
@@ -40,7 +43,17 @@ export function ChatPanel({
   onToggleMute,
 }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  const busy = status !== "idle" && status !== "error";
+  // Image generation must not lock the composer (mobile reliability).
+  const busy =
+    status === "thinking" ||
+    status === "streaming" ||
+    status === "analyzing";
+  const showStatusRow =
+    status === "error" ||
+    (status !== "idle" &&
+      status !== "streaming" &&
+      status !== "generating" &&
+      Boolean(STATUS_LABELS[status]));
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -75,23 +88,32 @@ export function ChatPanel({
             חי בצד. אפשר גם להעלות עד 2 תמונות רפרנס, או ללחוץ על המיקרופון ולדבר.
           </div>
         )}
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={`animate-rise flex ${m.role === "user" ? "justify-start" : "justify-end"}`}
-          >
+        {messages.map((m) => {
+          const isStreaming =
+            m.role === "assistant" &&
+            streamingMessageId === m.id &&
+            (status === "streaming" || status === "thinking");
+          return (
             <div
-              className={`max-w-[min(85%,28rem)] break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed sm:px-4 sm:py-3 ${
-                m.role === "user"
-                  ? "bg-ink text-panel"
-                  : "border border-line bg-paper text-ink"
-              }`}
+              key={m.id}
+              className={`animate-rise flex ${m.role === "user" ? "justify-start" : "justify-end"}`}
             >
-              {m.content}
+              <div
+                className={`max-w-[min(85%,28rem)] break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed sm:px-4 sm:py-3 ${
+                  m.role === "user"
+                    ? "bg-ink text-panel"
+                    : "border border-line bg-paper text-ink"
+                }`}
+              >
+                {m.content}
+                {isStreaming && (
+                  <span className="stream-caret" aria-hidden />
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-        {status !== "idle" && (
+          );
+        })}
+        {showStatusRow && (
           <div
             className={`flex items-center gap-2 text-sm ${
               status === "error" ? "text-red-700" : "text-accent"

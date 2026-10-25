@@ -8,6 +8,12 @@ import { SocialPreview } from "@/components/SocialPreview";
 import { useYonaVoice } from "@/hooks/useYonaVoice";
 import type { LiveStatus, SocialPost, UiMessage } from "@/lib/types/ui";
 import { DEFAULT_CHAT_ERROR_HE } from "@/lib/types/ui";
+import {
+  CLIENT_CHAT_TIMEOUT_MS,
+  CLIENT_IMAGE_TIMEOUT_MS,
+  fetchJsonWithRetry,
+  isAbortError,
+} from "@/lib/api/fetch-with-retry";
 
 interface UserInfo {
   email?: string | null;
@@ -50,11 +56,18 @@ export function YonaWorkspace({
   const [resetting, setResetting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<MobileTab>("chat");
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(
+    null
+  );
+  /** Preview spinner only — never locks the chat composer. */
+  const [imageLoading, setImageLoading] = useState(false);
 
   const showError = (message?: string) => {
     const he = message?.trim() || DEFAULT_CHAT_ERROR_HE;
     setToast(he);
     setStatus("error");
+    setImageLoading(false);
+    setStreamingMessageId(null);
     window.setTimeout(() => {
       setStatus("idle");
       setToast(null);
@@ -123,14 +136,15 @@ export function YonaWorkspace({
 
   /** On phones, jump to preview when image generation starts. */
   useEffect(() => {
-    if (status === "generating") setMobileTab("preview");
-  }, [status]);
+    if (imageLoading || status === "generating") setMobileTab("preview");
+  }, [imageLoading, status]);
 
   const clearLocalSession = () => {
     setMessages([]);
     setConversationId(null);
     setInput("");
     setStatus("idle");
+    setImageLoading(false);
     setFiles([]);
     setPreviews([]);
     setActivePost(null);
@@ -138,6 +152,7 @@ export function YonaWorkspace({
     setImageSeed(null);
     setLastImagePrompt(null);
     setCopyDone(false);
+    setStreamingMessageId(null);
     setMobileTab("chat");
   };
 
@@ -160,7 +175,11 @@ export function YonaWorkspace({
     async () => {}
   );
 
-  const chatBusy = status !== "idle" && status !== "error";
+  // Generating visuals must not disable mic / send (mobile «יונה חושבת» lock).
+  const chatBusy =
+    status === "thinking" ||
+    status === "streaming" ||
+    status === "analyzing";
 
   const {
     listening,
@@ -182,111 +201,546 @@ export function YonaWorkspace({
   speakRef.current = speak;
   stopSpeakingRef.current = stopSpeaking;
 
+  /** Follow-up FAL call after chat returns (deferred image). Never blocks composer. */
+  const fetchDeferredImage = async (opts: {
+    convId: string;
+    prompt: string;
+    aspectRatio?: "1:1" | "4:5" | "16:9";
+  }) => {
+    setImageLoading(true);
+    try {
+      const { res, data } = await fetchJsonWithRetry("/api/regenerate-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: opts.convId,
+          prompt: opts.prompt,
+          aspectRatio: opts.aspectRatio,
+          ...(guestMode ? { previousImagePrompt: lastImagePrompt } : {}),
+        }),
+        timeoutMs: CLIENT_IMAGE_TIMEOUT_MS,
+      });
+      if (!res.ok) {
+        console.error("[image follow-up]", data.error || res.status);
+        setToast(
+          typeof data.error_he === "string"
+            ? data.error_he
+            : "יצירת התמונה נכשלה. נסי שוב."
+        );
+        window.setTimeout(() => setToast(null), 3500);
+        return;
+      }
+      const image = data.image as
+        | { url?: string; seed?: number; prompt?: string }
+        | undefined;
+      if (image?.url) {
+        setImageUrl(image.url);
+        setImageSeed(image.seed ?? null);
+        if (image.prompt) setLastImagePrompt(image.prompt);
+      }
+      if (data.message) {
+        setMessages((prev) => [...prev, data.message as UiMessage]);
+      }
+    } catch (e) {
+      console.error("[image follow-up]", e);
+      setToast(
+        isAbortError(e)
+          ? "הבקשה ארכה יותר מדי. נסי שוב."
+          : "יצירת התמונה נכשלה. נסי שוב."
+      );
+      window.setTimeout(() => setToast(null), 3500);
+    } finally {
+      setImageLoading(false);
+    }
+  };
+
+  /** Non-stream JSON fallback when SSE is unavailable (502 / cold start). */
+  const sendChatJsonFallback = async (opts: {
+    text: string;
+    tempId: string;
+    assistantStreamId: string;
+    imageBase64Array?: string[];
+    history?: { role: string; content: string }[];
+  }) => {
+    const { res, data } = await fetchJsonWithRetry("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversationId,
+        message: opts.text,
+        imageBase64Array: opts.imageBase64Array,
+        ...(guestMode
+          ? {
+              history: opts.history,
+              previousImagePrompt: lastImagePrompt,
+            }
+          : {}),
+      }),
+      timeoutMs: CLIENT_CHAT_TIMEOUT_MS,
+    });
+
+    if (!res.ok) {
+      setMessages((prev) =>
+        prev.filter((m) => m.id !== opts.assistantStreamId)
+      );
+      showError(
+        typeof data.error_he === "string"
+          ? data.error_he
+          : DEFAULT_CHAT_ERROR_HE
+      );
+      return;
+    }
+
+    const convId =
+      typeof data.conversationId === "string"
+        ? data.conversationId
+        : conversationId;
+    if (convId) setConversationId(convId);
+
+    const assistant = data.message as UiMessage;
+    const output = data.output as
+      | {
+          social_post?: SocialPost | null;
+          chat_reply?: string;
+          image_task?: {
+            generate_image?: boolean;
+            prompt?: string;
+            aspect_ratio?: "1:1" | "4:5" | "16:9";
+          };
+        }
+      | undefined;
+
+    setMessages((prev) => [
+      ...prev.filter(
+        (m) => m.id !== opts.tempId && m.id !== opts.assistantStreamId
+      ),
+      { id: `u-${opts.tempId}`, role: "user", content: opts.text },
+      assistant,
+    ]);
+    setStreamingMessageId(null);
+    setStatus("idle");
+
+    if (output?.social_post) setActivePost(output.social_post);
+    if (assistant?.image_url) {
+      setImageUrl(assistant.image_url);
+      setImageSeed(assistant.image_seed ?? null);
+    }
+    const pendingPrompt =
+      assistant?.image_prompt ||
+      output?.image_task?.prompt ||
+      null;
+    if (pendingPrompt) setLastImagePrompt(pendingPrompt);
+
+    const reply =
+      (typeof output?.chat_reply === "string" && output.chat_reply) ||
+      assistant?.content ||
+      "";
+    if (reply) speakRef.current(reply);
+
+    if (
+      data.imagePending &&
+      convId &&
+      pendingPrompt &&
+      !(data.image as { url?: string } | null)?.url
+    ) {
+      void fetchDeferredImage({
+        convId,
+        prompt: pendingPrompt,
+        aspectRatio: output?.image_task?.aspect_ratio,
+      });
+    }
+  };
+
   const onSend = async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
-    if (!text) return;
+    if (!text || chatBusy) return;
 
     stopSpeakingRef.current();
 
     const tempId = `local-${Date.now()}`;
+    const assistantStreamId = `stream-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
       { id: tempId, role: "user", content: text },
+      { id: assistantStreamId, role: "assistant", content: "" },
     ]);
+    setStreamingMessageId(assistantStreamId);
     setInput("");
     setToast(null);
     setStatus(files.length ? "analyzing" : "thinking");
 
+    let imageBase64Array: string[] | undefined;
+    let gotTokens = false;
+    let finalReply = "";
+    const history = guestMode
+      ? messages
+          .filter((m) => m.id !== tempId)
+          .map((m) => ({ role: m.role, content: m.content }))
+      : undefined;
+
     try {
-      const imageBase64Array =
+      imageBase64Array =
         files.length > 0
           ? await Promise.all(files.map(fileToBase64))
           : undefined;
 
       if (files.length) setStatus("analyzing");
 
-      const history = guestMode
-        ? messages
-            .filter((m) => m.id !== tempId)
-            .map((m) => ({ role: m.role, content: m.content }))
-        : undefined;
+      const payload = {
+        conversationId,
+        message: text,
+        imageBase64Array,
+        ...(guestMode
+          ? { history, previousImagePrompt: lastImagePrompt }
+          : {}),
+      };
 
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conversationId,
-          message: text,
+      let res: Response;
+      try {
+        res = await fetch("/api/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(CLIENT_CHAT_TIMEOUT_MS),
+        });
+      } catch (streamOpenErr) {
+        console.warn("[chat] stream open failed → JSON fallback", streamOpenErr);
+        await sendChatJsonFallback({
+          text,
+          tempId,
+          assistantStreamId,
           imageBase64Array,
-          ...(guestMode
-            ? { history, previousImagePrompt: lastImagePrompt }
-            : {}),
-        }),
-      });
+          history,
+        });
+        setFiles([]);
+        setPreviews([]);
+        return;
+      }
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        console.error("[chat]", data.error || res.status);
+      const ct = res.headers.get("content-type") ?? "";
+      const gatewayFail =
+        !res.ok && (res.status === 502 || res.status === 503 || res.status === 504);
+      const notSse = res.ok && res.body && !ct.includes("text/event-stream");
+
+      if (gatewayFail || notSse || (res.ok && !res.body)) {
+        console.warn("[chat] stream unavailable", res.status, "→ JSON fallback");
+        await sendChatJsonFallback({
+          text,
+          tempId,
+          assistantStreamId,
+          imageBase64Array,
+          history,
+        });
+        setFiles([]);
+        setPreviews([]);
+        return;
+      }
+
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        console.error("[chat/stream]", data.error || res.status);
+        setMessages((prev) =>
+          prev.filter((m) => m.id !== assistantStreamId)
+        );
+        setStreamingMessageId(null);
         showError(
           typeof data.error_he === "string"
             ? data.error_he
-            : DEFAULT_CHAT_ERROR_HE
+            : res.status === 502 || res.status === 504
+              ? "השרת מתעורר או זמנית לא זמין. נסי שוב בעוד כמה שניות."
+              : DEFAULT_CHAT_ERROR_HE
         );
         return;
       }
 
-      if (data.output?.image_task?.generate_image) {
-        setStatus("generating");
-      }
-
-      setConversationId(data.conversationId);
       setFiles([]);
       setPreviews([]);
 
-      const assistant = data.message as UiMessage;
-      setMessages((prev) => [
-        ...prev.filter((m) => m.id !== tempId),
-        { id: `u-${tempId}`, role: "user", content: text },
-        assistant,
-      ]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let sawError = false;
+      let pendingImage = false;
+      let pendingPrompt: string | null = null;
+      let pendingAspect: "1:1" | "4:5" | "16:9" | undefined;
+      let doneConvId: string | null = conversationId;
 
-      if (data.output?.social_post) {
-        setActivePost(data.output.social_post);
-      }
-      if (data.image?.url) {
-        setImageUrl(data.image.url);
-        setImageSeed(data.image.seed);
-        setLastImagePrompt(data.image.prompt);
-      }
-      setStatus("idle");
+      const handleSseEvent = (eventName: string, rawData: string) => {
+        let data: Record<string, unknown> = {};
+        try {
+          data = JSON.parse(rawData) as Record<string, unknown>;
+        } catch {
+          return;
+        }
 
-      const reply =
-        (typeof data.output?.chat_reply === "string" && data.output.chat_reply) ||
-        assistant?.content ||
-        "";
-      if (reply) speakRef.current(reply);
+        switch (eventName) {
+          case "meta": {
+            if (typeof data.conversationId === "string") {
+              setConversationId(data.conversationId);
+              doneConvId = data.conversationId;
+            }
+            break;
+          }
+          case "status": {
+            const s = data.status;
+            if (s === "analyzing" || s === "thinking" || s === "streaming") {
+              setStatus(s);
+            } else if (s === "generating") {
+              setImageLoading(true);
+              // Unlock composer — image must not freeze chat on mobile
+              setStatus("idle");
+            }
+            break;
+          }
+          case "token": {
+            const delta = typeof data.text === "string" ? data.text : "";
+            if (!delta) break;
+            gotTokens = true;
+            finalReply += delta;
+            setStatus("streaming");
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantStreamId
+                  ? { ...m, content: m.content + delta }
+                  : m
+              )
+            );
+            break;
+          }
+          case "reply_fix": {
+            const next = typeof data.text === "string" ? data.text : "";
+            if (!next) break;
+            finalReply = next;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantStreamId ? { ...m, content: next } : m
+              )
+            );
+            break;
+          }
+          case "output": {
+            const output = data.output as
+              | {
+                  social_post?: SocialPost | null;
+                  chat_reply?: string;
+                  image_task?: {
+                    generate_image?: boolean;
+                    prompt?: string;
+                    aspect_ratio?: "1:1" | "4:5" | "16:9";
+                  };
+                  intent?: string;
+                }
+              | undefined;
+            if (output?.social_post) setActivePost(output.social_post);
+            if (typeof output?.chat_reply === "string" && output.chat_reply) {
+              finalReply = output.chat_reply;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantStreamId
+                    ? {
+                        ...m,
+                        content: output.chat_reply!,
+                        intent: output.intent ?? m.intent,
+                        social_post: output.social_post ?? m.social_post,
+                      }
+                    : m
+                )
+              );
+            }
+            if (output?.image_task?.generate_image && output.image_task.prompt) {
+              pendingImage = true;
+              pendingPrompt = output.image_task.prompt;
+              pendingAspect = output.image_task.aspect_ratio;
+              setLastImagePrompt(output.image_task.prompt);
+              setImageLoading(true);
+              setStatus("idle");
+            }
+            break;
+          }
+          case "image": {
+            const image = data.image as
+              | { url?: string; seed?: number; prompt?: string }
+              | undefined;
+            if (image?.url) {
+              pendingImage = false;
+              setImageLoading(false);
+              setImageUrl(image.url);
+              setImageSeed(image.seed ?? null);
+              if (image.prompt) setLastImagePrompt(image.prompt);
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantStreamId
+                    ? {
+                        ...m,
+                        image_url: image.url,
+                        image_seed: image.seed ?? null,
+                        image_prompt: image.prompt ?? null,
+                      }
+                    : m
+                )
+              );
+            }
+            break;
+          }
+          case "message": {
+            const assistant = data.message as UiMessage | undefined;
+            if (!assistant) break;
+            finalReply = assistant.content || finalReply;
+            setMessages((prev) => [
+              ...prev.filter(
+                (m) => m.id !== tempId && m.id !== assistantStreamId
+              ),
+              { id: `u-${tempId}`, role: "user", content: text },
+              {
+                ...assistant,
+                role: "assistant",
+                id: assistant.id || assistantStreamId,
+              },
+            ]);
+            setStreamingMessageId(null);
+            if (assistant.social_post) setActivePost(assistant.social_post);
+            if (assistant.image_url) {
+              pendingImage = false;
+              setImageLoading(false);
+              setImageUrl(assistant.image_url);
+              setImageSeed(assistant.image_seed ?? null);
+            }
+            if (assistant.image_prompt) {
+              pendingPrompt = assistant.image_prompt;
+              setLastImagePrompt(assistant.image_prompt);
+            }
+            break;
+          }
+          case "done": {
+            if (typeof data.conversationId === "string") {
+              setConversationId(data.conversationId);
+              doneConvId = data.conversationId;
+            }
+            if (data.imagePending) pendingImage = true;
+            setStreamingMessageId(null);
+            setStatus("idle");
+            break;
+          }
+          case "error": {
+            sawError = true;
+            setStreamingMessageId(null);
+            setImageLoading(false);
+            setMessages((prev) =>
+              prev.filter((m) => m.id !== assistantStreamId || m.content)
+            );
+            showError(
+              typeof data.error_he === "string"
+                ? data.error_he
+                : DEFAULT_CHAT_ERROR_HE
+            );
+            break;
+          }
+          default:
+            break;
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let sep: number;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const rawEvent = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          let eventName = "message";
+          const dataLines: string[] = [];
+          for (const line of rawEvent.split("\n")) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+          }
+          if (dataLines.length) {
+            handleSseEvent(eventName, dataLines.join("\n"));
+          }
+        }
+      }
+
+      setStreamingMessageId(null);
+      if (!sawError) {
+        setStatus("idle");
+        if (finalReply) speakRef.current(finalReply);
+        if (pendingImage && pendingPrompt && doneConvId) {
+          void fetchDeferredImage({
+            convId: doneConvId,
+            prompt: pendingPrompt,
+            aspectRatio: pendingAspect,
+          });
+        } else {
+          setImageLoading(false);
+        }
+      }
     } catch (e) {
-      console.error("[chat]", e);
-      showError(DEFAULT_CHAT_ERROR_HE);
+      console.error("[chat/stream]", e);
+      setStreamingMessageId(null);
+
+      // Tokens already shown — unlock UI; do not re-POST (avoids duplicate DB rows).
+      if (gotTokens) {
+        setStatus("idle");
+        setImageLoading(false);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantStreamId
+              ? { ...m, id: `a-${tempId}` }
+              : m.id === tempId
+                ? { ...m, id: `u-${tempId}` }
+                : m
+          )
+        );
+        if (finalReply) speakRef.current(finalReply);
+        return;
+      }
+
+      try {
+        await sendChatJsonFallback({
+          text,
+          tempId,
+          assistantStreamId,
+          imageBase64Array,
+          history,
+        });
+        setFiles([]);
+        setPreviews([]);
+      } catch (fallbackErr) {
+        console.error("[chat] JSON fallback failed", fallbackErr);
+        setImageLoading(false);
+        setMessages((prev) =>
+          prev.filter((m) => m.id !== assistantStreamId || m.content)
+        );
+        showError(
+          isAbortError(e) || isAbortError(fallbackErr)
+            ? "הבקשה ארכה יותר מדי. נסי שוב."
+            : DEFAULT_CHAT_ERROR_HE
+        );
+      }
     }
   };
 
   onSendRef.current = onSend;
 
   const onRegenerate = async () => {
-    if (!conversationId || !lastImagePrompt) return;
+    if (!conversationId || !lastImagePrompt || imageLoading) return;
     setToast(null);
-    setStatus("generating");
+    setImageLoading(true);
     try {
-      const res = await fetch("/api/regenerate-image", {
+      const { res, data } = await fetchJsonWithRetry("/api/regenerate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conversationId,
+          prompt: lastImagePrompt,
           ...(guestMode ? { previousImagePrompt: lastImagePrompt } : {}),
         }),
+        timeoutMs: CLIENT_IMAGE_TIMEOUT_MS,
       });
-      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.error("[regen]", data.error || res.status);
         showError(
@@ -296,16 +750,27 @@ export function YonaWorkspace({
         );
         return;
       }
-      setImageUrl(data.image.url);
-      setImageSeed(data.image.seed);
-      setLastImagePrompt(data.image.prompt);
+      const image = data.image as {
+        url: string;
+        seed: number;
+        prompt: string;
+      };
+      setImageUrl(image.url);
+      setImageSeed(image.seed);
+      setLastImagePrompt(image.prompt);
       if (data.message) {
         setMessages((prev) => [...prev, data.message as UiMessage]);
       }
       setStatus("idle");
     } catch (e) {
       console.error("[regen]", e);
-      showError("יצירת התמונה נכשלה. נסי שוב.");
+      showError(
+        isAbortError(e)
+          ? "הבקשה ארכה יותר מדי. נסי שוב."
+          : "יצירת התמונה נכשלה. נסי שוב."
+      );
+    } finally {
+      setImageLoading(false);
     }
   };
 
@@ -348,8 +813,8 @@ export function YonaWorkspace({
   };
 
   const waitingVisual = useMemo(
-    () => status === "generating" || status === "analyzing",
-    [status]
+    () => imageLoading || status === "analyzing" || status === "generating",
+    [imageLoading, status]
   );
 
   const previewReady = Boolean(activePost || imageUrl);
@@ -384,6 +849,7 @@ export function YonaWorkspace({
             messages={messages}
             status={status}
             statusMessage={toast}
+            streamingMessageId={streamingMessageId}
             input={input}
             previews={previews}
             onInputChange={setInput}
@@ -410,7 +876,9 @@ export function YonaWorkspace({
             onCopy={onCopy}
             onRegenerate={onRegenerate}
             canRegenerate={
-              Boolean(conversationId && lastImagePrompt) && status === "idle"
+              Boolean(conversationId && lastImagePrompt) &&
+              status === "idle" &&
+              !imageLoading
             }
             copyDone={copyDone}
           />

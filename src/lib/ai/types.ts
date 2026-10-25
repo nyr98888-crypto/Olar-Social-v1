@@ -26,6 +26,11 @@ export interface AgentRequest {
   referenceImages?: ReferenceImage[];
   /** Anti-lock comparison only — never inject into chat history as a template. */
   previousImagePrompt?: string | null;
+  /**
+   * When true: run text + Niche Lock guardrails only; skip FAL.
+   * Client (or stream Phase C) fetches the image in a follow-up so chat never hangs.
+   */
+  deferImage?: boolean;
 }
 
 export interface GeneratedImage {
