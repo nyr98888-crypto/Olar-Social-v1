@@ -12,6 +12,38 @@ import {
 import { buildMayaPersonaBlock } from "@/lib/ai-persona";
 import { normalizeCategory } from "@/lib/olar/business-categories";
 import type { UserMarketingProfile } from "@/lib/olar/user-marketing-profile";
+import type { ActivePostContext } from "./types";
+
+function buildActivePostBlock(currentPost: ActivePostContext | null): string {
+  if (!currentPost || typeof currentPost !== "object") return "";
+  const headline = (currentPost.headline || "").trim();
+  const body = (
+    currentPost.bodyText ||
+    currentPost.body ||
+    ""
+  ).trim();
+  const cta = (currentPost.ctaButton || currentPost.cta || "").trim();
+  if (!headline && !body) return "";
+  if (/^missing\s*card/i.test(headline)) return "";
+  const payload = JSON.stringify({
+    headline,
+    bodyText: body,
+    ctaButton: cta,
+    imageUrl: currentPost.imageUrl || null,
+    hashtags: Array.isArray(currentPost.hashtags) ? currentPost.hashtags : [],
+  });
+  return `
+## Active post on screen (AUTHORITATIVE — left preview card)
+את מאיה, מנהלת השיווק הדיגיטלי. הפוסט הנוכחי המוצג ללקוח הוא: כותרת: "${headline}", גוף הפוסט: "${body}".
+The user is looking at this exact post right now: ${payload}
+When they ask to update/edit/rewrite copy, refine THIS post (keep intent, improve Hebrew).
+Acknowledge the current headline/body in chat_reply so they know you see it.
+Return an updated social_post with the revised headline + body when editing.
+Primary edit contract (also echo in chat_reply / structured fields when possible):
+{ "reply": "...", "cardUpdate": { "title": "updated or null", "bodyText": "updated or null" } }
+Legacy aliases updatedTitle / updatedBodyText remain accepted.
+`;
+}
 
 export function buildSystemPrompt(
   brand: BrandGuidelines | null,
@@ -19,7 +51,8 @@ export function buildSystemPrompt(
   previousImagePrompt: string | null,
   brandDna: BrandDna | null = null,
   partnerMemory: PartnerMemory | null = null,
-  marketingProfile: UserMarketingProfile | null = null
+  marketingProfile: UserMarketingProfile | null = null,
+  currentPost: ActivePostContext | null = null
 ): string {
   const brandBlock = brand
     ? JSON.stringify(brand, null, 2)
@@ -41,6 +74,7 @@ Brand DNA / allowed_visual_style below OVERRIDES any visual direction implied by
 
   const nicheLockBlock = buildNicheLockBlock(brandDna);
   const memoryBlock = buildPartnerMemoryBlock(partnerMemory);
+  const activePostBlock = buildActivePostBlock(currentPost);
   const activeDomain =
     disambiguateBusinessDomain({
       text: [
@@ -221,11 +255,10 @@ Never literal-translate ambiguous Hebrew (פנים / ספר / צבע / רואה)
 5. Prefer concrete, local, useful phrasing over generic marketing speak — but ONLY using facts from grounding sources.
 
 ## Accept all user input (NON-NEGOTIABLE — לשון נקבה)
-את מקבלת כל קלט מהמשתמש — בין אם מדובר ברעיון גולמי, פוסט קיים לעריכה, או הוראה ישירה — ומפיקה עבורו מיד פוסט משופר, כותרת מנצחת ותמונה מתאימה ללא שום סירוב.
-- Never refuse "ready-made" / prewritten post text. Improve and return social_post immediately.
-- Never lecture "בלי טקסט מוכן מראש" / "טקסט מוכן" / "לא הצלחתי לייצר פוסט כרגע".
-- Never demand "רק תיאור קצר של העסק" when the user already gave usable copy, a draft, or an edit instruction.
-- Prefer intent=campaign_request / refinement with a filled social_post over missing_info whenever the message has usable content.
+את מקבלת כל קלט מהמשתמש — רעיון גולמי, טיוטה, פוסט קיים לעריכה, או הוראה ישירה — ומפיקה מיד JSON מלא עם social_post ממולא (כותרת + גוף + CTA) ו-chat_reply קצר בעברית.
+- Always improve and return a finished Hebrew social_post when the message has usable content.
+- Prefer intent=campaign_request / refinement with a filled social_post over missing_info.
+- Never ask the user to rewrite or shorten — polish what they gave.
 
 ## Critical rules
 1. chat_reply is ALWAYS Hebrew conversation in feminine first person. Never dump image prompts into chat_reply.
@@ -253,6 +286,7 @@ Hebrew has polysemous words that must be resolved by business context. Apply the
 If ambiguous and no clear context, ask (intent=missing_info) — do not guess.
 
 ${memoryBlock}
+${activePostBlock}
 ## Brand Guidelines (System State)
 ${brandBlock}
 ${nicheLockBlock}${visionBlock}${antiLock}`;

@@ -1,8 +1,61 @@
 /**
  * Hebrew visual context locks for FLUX prompts.
  * Creative-studio phrases must NEVER become industrial workshop / handyman scenes.
+ * Locksmith / door-lock phrases must NEVER become car engine / garage scenes.
  * Female owner names → female subject when craft studio is detected.
  */
+
+const LOCKSMITH_KEYS = [
+  "מנעולן",
+  "מנעולנות",
+  "צילינדר",
+  "צילינדרים",
+  "פריצה",
+  "פריצות",
+  "פתיחת דלת",
+  "פתיחת דלתות",
+  "מנעול דלת",
+  "החלפת מנעול",
+  "locksmith",
+  "door lock",
+  "cylinder lock",
+  "deadbolt",
+] as const;
+
+const LOCKSMITH_AVOID =
+  "cars, car engine, automotive garage, spray booth, mechanic, auto repair, engine block, burglar, thief, masked criminal, crime scene, violence, dark alley";
+
+const LOCKSMITH_PROMPT =
+  "Professional certified locksmith at a residential wooden front door, installing or opening a door cylinder lock with professional locksmith tools, bright daylight, trustworthy commercial trades photography, 8k photorealistic";
+
+export function isLocksmithContext(
+  ...sources: Array<string | null | undefined>
+): boolean {
+  const blob = sources.filter(Boolean).join(" ");
+  if (!blob.trim()) return false;
+  const lower = blob.toLowerCase();
+  if (LOCKSMITH_KEYS.some((k) => lower.includes(k.toLowerCase()))) return true;
+  if (/locksmith|door\s*lock/.test(lower)) return true;
+  // Bare "דלת" only with lock/break-in cues nearby
+  if (/דלת/.test(blob) && /מנעול|צילינדר|פריצ|פתיח/.test(blob)) return true;
+  return false;
+}
+
+export function resolveLocksmithLock(opts: {
+  description?: string | null;
+  niche?: string | null;
+  category?: string | null;
+  businessName?: string | null;
+}): string | null {
+  const sources = [
+    opts.description,
+    opts.niche,
+    opts.category,
+    opts.businessName,
+  ];
+  if (!isLocksmithContext(...sources)) return null;
+  return `${LOCKSMITH_PROMPT}. avoid: ${LOCKSMITH_AVOID}`;
+}
 
 const CREATIVE_STUDIO_KEYS = [
   "סדנת יצירה",

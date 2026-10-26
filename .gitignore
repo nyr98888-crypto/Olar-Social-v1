@@ -28,6 +28,10 @@
 *.pem
 Thumbs.db
 
+# local SQLite (Home → Studio campaigns)
+/data/*.db
+/data/*.db-*
+
 # debug
 npm-debug.log*
 yarn-debug.log*

@@ -1,11 +1,16 @@
 /**
- * A/B campaign generation — 2 Hebrew copy styles + 2 parallel FLUX images.
- * Response includes `variations[]` plus legacy flat fields (var_1 defaults).
- * Content pillars via `postType` reshape tone, CTAs, and image bias.
+ * Single-card campaign generation — 1 Hebrew copy + 1 FLUX image.
+ * Response includes `variations[]` (length-2 padded for store types) plus
+ * legacy flat fields and `post` alias of variations[0].
  */
 import { NextResponse } from "next/server";
 import { getAppSession } from "@/lib/auth/session";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import {
+  checkIpRateLimit,
+  clientIpFromRequest,
+  GENERATE_POST_RATE_LIMIT_MESSAGE,
+} from "@/lib/api/ip-rate-limit";
 import {
   getMarketingProfile,
   recordPostActivity,
@@ -35,13 +40,12 @@ import {
 } from "@/lib/ai/hebrew-disambiguation";
 import {
   VAR_1_LABEL,
-  VAR_2_LABEL,
   closeUpImagePrompt,
-  dualGroundedVariations,
-  wideShotImagePrompt,
+  padVariationPair,
+  singleGroundedVariation,
   type CampaignVariation,
 } from "@/lib/olar/ab-variations";
-import { generateAbImagesParallel } from "@/lib/ai/generate-ab-images";
+import { generateImageWithFallback } from "@/lib/ai/generate-ab-images";
 import { resolvePostTypeImageBias } from "@/lib/ai/resolve-post-type-image-bias";
 import { trimImageAnchorWords } from "@/lib/ai/image-anchor-prompt";
 import { buildMayaPersonaBlock } from "@/lib/ai-persona";
@@ -59,7 +63,6 @@ export const maxDuration = 60;
 function buildSystem(
   category: BusinessCategoryId | null,
   raw: string,
-  style: "punchy" | "story",
   postType: PostTypeId,
   marketingProfile: UserMarketingProfile | null = null
 ): string {
@@ -74,28 +77,16 @@ function buildSystem(
     : "";
 
   const isPromo = postType === "promotion";
-  const styleBlock =
-    style === "punchy"
-      ? isPromo
-        ? `STYLE = SALES / DIRECT (variation 1 — short punchy):
+  const styleBlock = isPromo
+    ? `STYLE = SALES / DIRECT (single post):
 - Short punchy Hebrew headline.
 - Body focuses on offer, availability, speed, clear next step.
 - CTA = immediate WhatsApp booking (e.g. להזמנה מהירה בוואטסאפ).
 - image_task.prompt = English CLOSE-UP of the craft/product/action.`
-        : `STYLE = RESULT-FOCUSED (variation 1 — short punchy):
+    : `STYLE = RESULT-FOCUSED (single post):
 - Short punchy Hebrew headline centered on the outcome / win / finished result.
 - Body is concise and authentic — ground only in userText.
 - CTA must match the post-type rules below (engagement, not invented promos).
-- image_task.prompt = English visual matching the post-type image guidance.`
-      : isPromo
-        ? `STYLE = STORY / COMMUNITY (variation 2):
-- Warm Hebrew headline (quality, trust, personal service).
-- Body is emotional/community-oriented; no invented prices.
-- CTA = soft invite (e.g. לפרטים ותיאום ישיר).
-- image_task.prompt = English WIDER atmospheric shot of the place/mood.`
-        : `STYLE = STORYTELLING (variation 2 — process / challenge):
-- Warm Hebrew headline; body walks through process, challenge, then result.
-- No invented prices/offers. CTA must match post-type rules below.
 - image_task.prompt = English visual matching the post-type image guidance.`;
 
   return `${buildMayaPersonaBlock({ category, marketingProfile })}
@@ -110,7 +101,7 @@ ${categoryLock}
 ## Content pillar / post type (mandatory)
 ${postTypeLlmToneBlock(postType)}
 
-## Variation style (mandatory)
+## Style (mandatory — ONE post only)
 ${styleBlock}
 
 ## Hebrew Semantic Disambiguation
@@ -118,8 +109,8 @@ ${HEBREW_COMPOUND_NOUN_RULE_HE}
 ${buildDisambiguationSystemBlock(domain)}
 
 HARD RULES:
-- את מקבלת כל קלט מהמשתמש — בין אם מדובר ברעיון גולמי, פוסט קיים לעריכה, או הוראה ישירה — ומפיקה עבורו מיד פוסט משופר, כותרת מנצחת ותמונה מתאימה ללא שום סירוב.
-- Never refuse ready-made / prewritten text. Never say "בלי טקסט מוכן מראש" or demand only a short business description.
+- Always return full marketing JSON: filled social_post (headline + body + CTA in Hebrew) plus short chat_reply. Polish any draft the user sent — never ask them to rewrite.
+- Produce ONE post only — never two A/B options.
 - Ground EVERY fact ONLY in the userText. Never invent prices, services, or dishes the user did not mention.
 - If user mentions a specific dish (e.g. ג'חנון / פיצה / pizza), the English image prompt MUST feature that food close-up — appetizing, grounded, commercial food photography.
 - NEVER invent numeric prices unless user wrote them.
@@ -160,7 +151,7 @@ function variationPayload(
   const replyMessage = sanitizeMarketingCopy(
     rawReply && !isBlockedStudioChatReply(rawReply)
       ? rawReply
-      : "הכנו שתי אופציות שונות — בחרו את מה שמדבר אליכם!"
+      : "הכנתי לך פוסט מוכן — אפשר להמשיך לערוך בסטודיו!"
   );
 
   const post = {
@@ -174,6 +165,7 @@ function variationPayload(
   return {
     ok: true as const,
     replyMessage,
+    reply: replyMessage,
     postType: opts.postType,
     variations: [
       {
@@ -188,7 +180,7 @@ function variationPayload(
       },
       {
         id: "var_2" as const,
-        label: b.label || VAR_2_LABEL,
+        label: b.label || VAR_1_LABEL,
         headline: b.headline,
         bodyText: b.bodyText,
         imageUrl: b.imageUrl || null,
@@ -197,9 +189,7 @@ function variationPayload(
         hashtags: b.hashtags || [],
       },
     ],
-    // Alias of variations[0] — clients expecting a single `post` card
     post,
-    // Legacy flat = variation 1 (default selection)
     postData: {
       headline: a.headline,
       bodyText: a.bodyText,
@@ -220,11 +210,11 @@ function variationPayload(
     providerUsed: opts.providerUsed,
     soft_message:
       opts.soft_message ||
-      "שתי אופציות מוכנות — בחרו את המועדפת והמשיכו לערוך.",
+      "הפוסט מוכן — לחצו להמשיך לעריכה בסטודיו.",
   };
 }
 
-async function attachParallelImages(
+async function attachSingleImage(
   variations: CampaignVariation[],
   opts: {
     userText: string;
@@ -232,7 +222,6 @@ async function attachParallelImages(
     businessName?: string;
     niche?: string | null;
     postType: PostTypeId;
-    /** Image-only visual words — never mixed into Hebrew copy. */
     imageAnchorWords?: string | null;
   }
 ): Promise<CampaignVariation[]> {
@@ -241,50 +230,32 @@ async function attachParallelImages(
     category: opts.category,
     userText: opts.userText,
     basePromptA: variations[0]?.imagePrompt || opts.userText,
-    basePromptB:
-      variations[1]?.imagePrompt ||
-      variations[0]?.imagePrompt ||
-      opts.userText,
+    basePromptB: variations[0]?.imagePrompt || opts.userText,
   });
 
   const prompt1 =
     opts.postType === "promotion"
       ? closeUpImagePrompt(variations[0]?.imagePrompt || opts.userText)
       : bias.promptA;
-  const prompt2 =
-    opts.postType === "promotion"
-      ? wideShotImagePrompt(
-          variations[1]?.imagePrompt ||
-            variations[0]?.imagePrompt ||
-            opts.userText
-        )
-      : bias.promptB;
 
-  const [imageRes1, imageRes2] = await generateAbImagesParallel({
-    promptA: prompt1,
-    promptB: prompt2,
+  const seed = Math.floor(Math.random() * 10000000);
+  const imageRes = await generateImageWithFallback({
+    prompt: prompt1,
+    seed,
     category: opts.category,
     userText: opts.userText,
     businessName: opts.businessName,
     niche: opts.niche,
     postType: opts.postType,
-    imageAnchorWords: opts.imageAnchorWords,
+    anchorDriven: Boolean(opts.imageAnchorWords?.trim()),
   });
 
-  return [
-    {
-      ...variations[0]!,
-      imagePrompt: imageRes1.prompt || prompt1,
-      imageUrl: imageRes1.url,
-    },
-    {
-      ...(variations[1] || variations[0]!),
-      id: "var_2",
-      label: VAR_2_LABEL,
-      imagePrompt: imageRes2.prompt || prompt2,
-      imageUrl: imageRes2.url,
-    },
-  ];
+  const withImage: CampaignVariation = {
+    ...variations[0]!,
+    imagePrompt: imageRes.prompt || prompt1,
+    imageUrl: imageRes.url,
+  };
+  return padVariationPair(withImage);
 }
 
 export async function POST(request: Request) {
@@ -310,7 +281,6 @@ export async function POST(request: Request) {
       businessName?: string;
       skipImages?: boolean;
       postType?: string | null;
-      /** Optional 3–4 visual words — image generation only, never Hebrew headlines. */
       imageAnchorWords?: string | null;
     };
 
@@ -318,7 +288,6 @@ export async function POST(request: Request) {
       (body.userText || body.input || body.prompt || "").trim()
     );
     const hadBracketDraft = hasBracketLeak(rawUserText);
-    // Never feed unfinished [fill-in] forms into grounded headlines as finished copy
     userText = hadBracketDraft
       ? stripBracketPlaceholders(rawUserText)
       : rawUserText;
@@ -336,27 +305,33 @@ export async function POST(request: Request) {
       });
     }
 
+    const rateKey =
+      session?.user?.id && session.mode === "supabase"
+        ? `user:${session.user.id}`
+        : `ip:${clientIpFromRequest(request)}`;
+    if (!checkIpRateLimit(rateKey)) {
+      return NextResponse.json(
+        { ok: false, error: GENERATE_POST_RATE_LIMIT_MESSAGE },
+        { status: 429 }
+      );
+    }
+
     const lockedNiche = category
       ? legacyNicheFromCategory(category)
       : undefined;
 
     const hasOpenRouter = Boolean(process.env.OPENROUTER_API_KEY?.trim());
-    const hasGroq = Boolean(process.env.GROQ_API_KEY?.trim());
-    const hasGemini = Boolean(
-      process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_AI_API_KEY?.trim()
-    );
 
-    console.log("[api/generate-post] A/B start", {
+    console.log("[api/generate-post] single-card start", {
       hasOpenRouter,
-      hasGroq,
-      hasGemini,
+      textEngine: "openrouter-only",
       category,
       postType,
       timeoutMs: GENERATE_POST_TIMEOUT_MS,
       userSample: userText.slice(0, 80),
     });
 
-    const grounded = dualGroundedVariations({
+    const grounded = singleGroundedVariation({
       userText,
       category,
       city,
@@ -366,7 +341,7 @@ export async function POST(request: Request) {
 
     let variations: CampaignVariation[] = grounded.variations;
     let chatReply = grounded.chat_reply;
-    let providerUsed = "fallback:grounded-ab";
+    let providerUsed = "fallback:grounded-single";
 
     let marketingProfile: UserMarketingProfile | null = null;
     if (session?.mode === "supabase" && isSupabaseConfigured()) {
@@ -378,7 +353,7 @@ export async function POST(request: Request) {
       }
     }
 
-    if (hasOpenRouter || hasGroq || hasGemini) {
+    if (hasOpenRouter) {
       try {
         const userContent = hadBracketDraft
           ? `DRAFT FORM (replace placeholders with polished finished Hebrew — NEVER echo square brackets []):\n${userText}`
@@ -392,37 +367,20 @@ export async function POST(request: Request) {
           timeoutMs: GENERATE_POST_TIMEOUT_MS,
         };
 
-        // Parallel dual-style text generation (punchy + storytelling)
-        const [punchyRes, storyRes] = await Promise.all([
-          generateStructuredText(
-            buildSystem(category, userText, "punchy", postType, marketingProfile),
-            messages,
-            ctx
-          ),
-          generateStructuredText(
-            buildSystem(category, userText, "story", postType, marketingProfile),
-            messages,
-            ctx
-          ),
-        ]);
+        const punchyRes = await generateStructuredText(
+          buildSystem(category, userText, postType, marketingProfile),
+          messages,
+          ctx
+        );
 
         const punchyPost = punchyRes.output.social_post;
-        const storyPost = storyRes.output.social_post;
-
-        // Require REAL model copy before sanitizeVariationCopy (which invents
-        // fallbacks and previously leaked golden soft-fail chat_reply).
         const punchyRawH = sanitizeMarketingCopy(punchyPost?.headline || "");
         const punchyRawB = sanitizeMarketingCopy(punchyPost?.body || "");
-        const storyRawH = sanitizeMarketingCopy(storyPost?.headline || "");
-        const storyRawB = sanitizeMarketingCopy(storyPost?.body || "");
         const llmUsable =
-          Boolean(punchyRawH && punchyRawB && storyRawH && storyRawB) &&
+          Boolean(punchyRawH && punchyRawB) &&
           !punchyRes.fallback &&
-          !storyRes.fallback &&
           !hasBracketLeak(punchyRawH) &&
-          !hasBracketLeak(punchyRawB) &&
-          !hasBracketLeak(storyRawH) &&
-          !hasBracketLeak(storyRawB);
+          !hasBracketLeak(punchyRawB);
 
         if (llmUsable) {
           const punchyClean = sanitizeVariationCopy({
@@ -433,14 +391,6 @@ export async function POST(request: Request) {
             fallbackBody: grounded.variations[0]!.bodyText,
             fallbackCta: defaultCtas.var1,
           });
-          const storyClean = sanitizeVariationCopy({
-            headline: storyPost?.headline || "",
-            bodyText: storyPost?.body || "",
-            ctaButton: storyPost?.call_to_action || "",
-            fallbackHeadline: grounded.variations[1]!.headline,
-            fallbackBody: grounded.variations[1]!.bodyText,
-            fallbackCta: defaultCtas.var2,
-          });
 
           const bias = resolvePostTypeImageBias({
             postType,
@@ -450,65 +400,42 @@ export async function POST(request: Request) {
               punchyRes.output.image_task?.prompt ||
               grounded.variations[0]!.imagePrompt,
             basePromptB:
-              storyRes.output.image_task?.prompt ||
-              grounded.variations[1]!.imagePrompt,
+              punchyRes.output.image_task?.prompt ||
+              grounded.variations[0]!.imagePrompt,
           });
 
-          variations = [
-            {
-              id: "var_1",
-              label: VAR_1_LABEL,
-              headline: punchyClean.headline,
-              bodyText: punchyClean.bodyText,
-              ctaButton: punchyClean.ctaButton || defaultCtas.var1,
-              imagePrompt:
-                postType === "promotion"
-                  ? closeUpImagePrompt(
-                      punchyRes.output.image_task?.prompt ||
-                        grounded.variations[0]!.imagePrompt
-                    )
-                  : bias.promptA,
-              hashtags: punchyPost?.hashtags || [],
-              imageUrl: null,
-            },
-            {
-              id: "var_2",
-              label: VAR_2_LABEL,
-              headline: storyClean.headline,
-              bodyText: storyClean.bodyText,
-              ctaButton: storyClean.ctaButton || defaultCtas.var2,
-              imagePrompt:
-                postType === "promotion"
-                  ? wideShotImagePrompt(
-                      storyRes.output.image_task?.prompt ||
-                        grounded.variations[1]!.imagePrompt
-                    )
-                  : bias.promptB,
-              hashtags: storyPost?.hashtags || [],
-              imageUrl: null,
-            },
-          ];
-          const llmReply =
-            punchyRes.output.chat_reply?.trim() ||
-            storyRes.output.chat_reply?.trim() ||
-            "";
-          // Never surface golden soft-fail / ready-made lecture as Maya's reply
+          const primary: CampaignVariation = {
+            id: "var_1",
+            label: VAR_1_LABEL,
+            headline: punchyClean.headline,
+            bodyText: punchyClean.bodyText,
+            ctaButton: punchyClean.ctaButton || defaultCtas.var1,
+            imagePrompt:
+              postType === "promotion"
+                ? closeUpImagePrompt(
+                    punchyRes.output.image_task?.prompt ||
+                      grounded.variations[0]!.imagePrompt
+                  )
+                : bias.promptA,
+            hashtags: punchyPost?.hashtags || [],
+            imageUrl: null,
+          };
+          variations = padVariationPair(primary);
+          const llmReply = punchyRes.output.chat_reply?.trim() || "";
           chatReply =
             llmReply && !isBlockedStudioChatReply(llmReply)
               ? llmReply
               : grounded.chat_reply;
-          providerUsed = `ab:${punchyRes.providerUsed}+${storyRes.providerUsed}`;
+          providerUsed = `single:${punchyRes.providerUsed}`;
         } else {
-          console.warn("[api/generate-post] incomplete A/B text → grounded", {
+          console.warn("[api/generate-post] incomplete text → grounded", {
             punchyFallback: punchyRes.fallback,
-            storyFallback: storyRes.fallback,
             punchyHasPost: Boolean(punchyPost),
-            storyHasPost: Boolean(storyPost),
           });
         }
       } catch (err) {
         console.error(
-          "[api/generate-post] A/B LLM failed → grounded",
+          "[api/generate-post] LLM failed → grounded",
           err instanceof Error ? err.message : err
         );
       }
@@ -516,7 +443,7 @@ export async function POST(request: Request) {
 
     if (!body.skipImages) {
       try {
-        variations = await attachParallelImages(variations, {
+        variations = await attachSingleImage(variations, {
           userText,
           category,
           businessName: body.businessName,
@@ -526,13 +453,12 @@ export async function POST(request: Request) {
         });
       } catch (err) {
         console.error(
-          "[api/generate-post] parallel images failed",
+          "[api/generate-post] single image failed",
           err instanceof Error ? err.message : err
         );
       }
     }
 
-    // Wingman memory — authenticated only; soft-fail if table missing
     if (
       session?.mode === "supabase" &&
       isSupabaseConfigured() &&
@@ -572,7 +498,7 @@ export async function POST(request: Request) {
       err instanceof Error ? err.message : err
     );
     if (userText) {
-      const dual = dualGroundedVariations({
+      const single = singleGroundedVariation({
         userText,
         category,
         city,
@@ -580,12 +506,12 @@ export async function POST(request: Request) {
         postType,
       });
       return NextResponse.json(
-        variationPayload(dual.variations, {
+        variationPayload(single.variations, {
           category,
           postType,
-          chat_reply: dual.chat_reply,
+          chat_reply: single.chat_reply,
           providerUsed: "fallback:grounded-unexpected",
-          soft_message: "יצרתי שתי טיוטות מהטקסט שלכם — בחרו והמשיכו.",
+          soft_message: "יצרתי טיוטה מהטקסט שלכם — אפשר להמשיך לערוך.",
         })
       );
     }

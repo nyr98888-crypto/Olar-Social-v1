@@ -3,15 +3,7 @@ import {
   generateWithOpenRouter,
   streamWithOpenRouter,
 } from "./providers/openrouter";
-import { generateWithGroq } from "./providers/groq";
-import {
-  generateWithGrok,
-  isGrokConfigured,
-} from "./providers/grok";
-import {
-  analyzeReferenceImages,
-  generateWithGemini,
-} from "./providers/gemini";
+import { analyzeReferenceImages } from "./providers/gemini";
 import { generateImage } from "./image-service";
 import { buildGoldenAgentOutput } from "./golden-templates";
 import { enforcePublicationGrounding } from "./grounding";
@@ -23,11 +15,6 @@ import {
   buildVisualGenerationCorrectionMessage,
   userExplicitlyRequestsVisual,
 } from "./image-intent";
-import {
-  buildNicheLockCorrectionMessage,
-  PROMPT_GUARDRAIL_MAX_RETRIES,
-  validateImagePrompt,
-} from "./validator";
 import { withTimeout } from "./with-timeout";
 import {
   takeSlidingWindow,
@@ -37,10 +24,10 @@ import {
   type GeneratedImage,
 } from "./types";
 import type { AgentOutput, BrandDna } from "../../../schemas/agent";
-import { isBrandDnaComplete } from "../../../schemas/agent";
+import { AI_CONFIG } from "@/lib/ai-config";
 
 /** Text structured generation hard cap — golden template on exceed (production). */
-const STRUCTURED_TEXT_TIMEOUT_MS = 4_000;
+const STRUCTURED_TEXT_TIMEOUT_MS = AI_CONFIG.STRUCTURED_TEXT_TIMEOUT_MS;
 
 function buildPostInputContext(
   req: Pick<AgentRequest, "userMessage" | "brandGuidelines" | "brandDna">,
@@ -91,23 +78,19 @@ export type AgentStreamEvent =
   | { type: "reply_fix"; text: string };
 
 /**
- * Authoritative provider chain
+ * Authoritative provider chain (user override — OpenRouter exclusive text)
  * ────────────────────────────
- * TEXT / structured JSON (always):
- *   1) OpenRouter hybrid `models[]` —
- *      haiku-5.5 → claude-3.5-sonnet → gpt-4o-mini → llama-3.3-70b → gemini-2.0-flash-exp:free
- *      (+ client-side sequential if models[] rejected)
- *   2) Optional Grok (XAI/GROK key) — ONLY after entire OpenRouter fails
- *   3) Groq openai/gpt-oss-120b
- *   4) Gemini Flash — final text backup only
+ * TEXT / structured JSON:
+ *   OpenRouter hybrid only (`openai/gpt-4o-mini` → haiku → sonnet → …).
+ *   On total OpenRouter failure → golden template (no Groq / Grok / Gemini /
+ *   Together for chat or marketing text).
  *
  * VISION (reference uploads only):
  *   Gemini Flash → English visual brief. Soft-skip on failure; text still
- *   runs OpenRouter. Gemini is NEVER used for image generation.
+ *   runs OpenRouter. Gemini is NEVER used for image generation or chat text.
  *
  * IMAGES:
- *   FAL fal-ai/flux/schnell only, when generate_image === true,
- *   AFTER Prompt Guardrail (forbidden_elements) passes.
+ *   FAL fal-ai/flux/schnell only, when generate_image === true.
  */
 /** Exported for test-engine failover simulation */
 export async function runStructuredAgent(
@@ -125,56 +108,15 @@ export async function runStructuredAgent(
     };
   }
 
-  // 1) OpenRouter — always first for conversational / structured JSON
+  // OpenRouter only — no Together / Groq / Gemini text backups
   try {
     const { output, model } = await generateWithOpenRouter(system, messages);
     return { output, providerUsed: `openrouter:${model}` };
   } catch (err) {
-    const status = (err as { status?: number }).status;
-    const next = isGrokConfigured() ? "Grok" : "Groq";
-    console.warn(
-      `[router] OpenRouter failed → ${next}`,
-      status ?? (err instanceof Error ? err.message : err)
-    );
-  }
-
-  // 2) Optional Grok / xAI — only when key present, after OpenRouter
-  if (isGrokConfigured()) {
-    try {
-      const { output, model } = await generateWithGrok(system, messages);
-      console.log("[router] provider switch: using Grok backup", model);
-      return { output, providerUsed: `grok:${model}` };
-    } catch (err) {
-      const status = (err as { status?: number }).status;
-      console.warn(
-        "[router] Grok failed → Groq",
-        status ?? (err instanceof Error ? err.message : err)
-      );
-    }
-  }
-
-  // 3) Groq — backup text only
-  try {
-    const { output, model } = await generateWithGroq(system, messages);
-    console.log("[router] provider switch: using Groq backup", model);
-    return { output, providerUsed: `groq:${model}` };
-  } catch (err) {
-    const status = (err as { status?: number }).status;
-    console.warn(
-      "[router] Groq failed → Gemini",
-      status ?? (err instanceof Error ? err.message : err)
-    );
-  }
-
-  // 4) Gemini Flash — final text backup only
-  try {
-    const { output, model } = await generateWithGemini(system, messages);
-    console.log("[router] provider switch: using Gemini backup", model);
-    return { output, providerUsed: `gemini:${model}` };
-  } catch (err) {
     console.error(
-      "[router] All text providers failed — golden template",
-      err instanceof Error ? err.message : err
+      "[router] OpenRouter failed — golden template (no external text backups)",
+      (err as { status?: number }).status ??
+        (err instanceof Error ? err.message : err)
     );
     const lastUser =
       [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
@@ -216,14 +158,9 @@ async function enforceExplicitVisualRequest(
   if (output.image_task.generate_image && output.image_task.prompt?.trim()) {
     return { output };
   }
-  // Respect ask-first / incomplete DNA — do not force FAL
-  if (
-    output.intent === "missing_info" ||
-    !isBrandDnaComplete(args.brandDna)
-  ) {
-    console.log(
-      "[router] Explicit visual ask — waiting on missing_info / Niche Lock"
-    );
+  // Respect ask-first missing_info — do not force image while clarifying
+  if (output.intent === "missing_info") {
+    console.log("[router] Explicit visual ask — waiting on missing_info");
     return { output };
   }
 
@@ -264,13 +201,12 @@ async function enforceExplicitVisualRequest(
 }
 
 /**
- * Before FAL: validate prompt vs Brand DNA forbidden_elements.
- * On hit: discard prompt, re-call LLM with severe correction (up to MAX_RETRIES).
- * If still dirty: skip image safely.
+ * Phase 2: Niche Lock / forbidden-word guardrail DISABLED for images.
+ * FAL + Together cloud safety checkers are the only content filters.
  */
 async function enforcePromptGuardrailBeforeFal(
   output: AgentOutput,
-  args: {
+  _args: {
     system: string;
     messages: ChatTurn[];
     brandDna: BrandDna | null;
@@ -280,75 +216,7 @@ async function enforcePromptGuardrailBeforeFal(
     history: ChatTurn[];
   }
 ): Promise<{ output: AgentOutput; providerUsed?: string }> {
-  if (!output.image_task.generate_image || !output.image_task.prompt) {
-    return { output };
-  }
-
-  const dna = isBrandDnaComplete(args.brandDna) ? args.brandDna : null;
-
-  // No complete DNA → do not send visuals (Niche Lock incomplete)
-  if (!dna) {
-    console.warn("[router] Niche Lock incomplete — skipping FAL");
-    skipImageGeneration(
-      output,
-      "לפני שאני מייצרת ויז'ואל — מה סוג העסק? (למשל מוסך, קוסמטיקאית, רואה חשבון)"
-    );
-    if (output.intent === "campaign_request" || output.intent === "refinement") {
-      output.intent = "missing_info";
-      output.social_post = null;
-    }
-    return { output };
-  }
-
-  let current = output;
-  let lastProvider: string | undefined;
-  const correctionMessages: ChatTurn[] = [];
-
-  for (let attempt = 0; attempt <= PROMPT_GUARDRAIL_MAX_RETRIES; attempt++) {
-    const check = validateImagePrompt(current.image_task.prompt, dna);
-    if (check.ok) {
-      return { output: current, providerUsed: lastProvider };
-    }
-
-    console.warn(
-      "[router] Prompt Guardrail hit — discarding prompt",
-      check.hits
-    );
-
-    // Discard dirty prompt; do not call FAL
-    const dirty = check.prompt;
-    current.image_task.generate_image = false;
-    delete current.image_task.prompt;
-
-    if (attempt >= PROMPT_GUARDRAIL_MAX_RETRIES) {
-      break;
-    }
-
-    const correction = buildNicheLockCorrectionMessage(dna, dirty, check.hits);
-    correctionMessages.push({ role: "user", content: correction });
-
-    const { output: regenerated, providerUsed } = await runStructuredAgent(
-      args.system,
-      [...args.messages, ...correctionMessages]
-    );
-    lastProvider = providerUsed;
-    current = regenerated;
-
-    // Re-apply text contracts on regenerated output
-    enforcePublicationGrounding(current, {
-      userMessage: args.userMessage,
-      brand: args.brandGuidelines,
-      brandDna: dna,
-      visionNotes: args.visionNotes,
-      history: args.history,
-    });
-  }
-
-  skipImageGeneration(
-    current,
-    "עצרתי את יצירת התמונה — הפרומפט חרג מנישת המותג. ננסה שוב עם כיוון ויזואלי אחר?"
-  );
-  return { output: current, providerUsed: lastProvider };
+  return { output };
 }
 
 /**
@@ -385,7 +253,8 @@ export async function runAgentPipeline(
     req.previousImagePrompt ?? null,
     brandDna,
     req.partnerMemory ?? null,
-    req.marketingProfile ?? null
+    req.marketingProfile ?? null,
+    req.currentPost ?? null
   );
 
   // Sliding window = last 6 messages only (no prior image prompts in chat)
@@ -464,26 +333,16 @@ export async function runAgentPipeline(
 
   let image: GeneratedImage | null = null;
   if (output.image_task.generate_image && output.image_task.prompt) {
-    // Final gate immediately before FAL
-    const finalCheck = validateImagePrompt(output.image_task.prompt, brandDna);
-    if (!finalCheck.ok) {
-      console.warn(
-        "[router] Final guardrail blocked FAL",
-        finalCheck.hits
-      );
-      skipImageGeneration(
-        output,
-        "עצרתי את יצירת התמונה — הפרומפט לא עמד בכללי הנישה."
-      );
-    } else if (req.deferImage) {
-      // Chat returns first; client/stream Phase C fetches FAL separately.
+    // Phase 2: no local Niche Lock gate — dual engine (FAL → Together)
+    if (req.deferImage) {
+      // Chat returns first; client/stream Phase C fetches image separately.
       console.log(
-        "[router] deferImage — generate_image=true; client will call FAL next"
+        "[router] deferImage — generate_image=true; client will call image next"
       );
       image = null;
     } else {
       try {
-        console.log("[router] Calling FAL via image-service…");
+        console.log("[router] Calling dual image-service…");
         image = await generateImage({
           prompt: output.image_task.prompt,
           aspectRatio: output.image_task.aspect_ratio,
@@ -493,7 +352,7 @@ export async function runAgentPipeline(
         });
       } catch (err) {
         console.error(
-          "[router] FAL failed",
+          "[router] Image gen failed",
           err instanceof Error ? err.message : err
         );
         const he =
@@ -549,7 +408,8 @@ export async function runAgentPipelineStream(
     req.previousImagePrompt ?? null,
     brandDna,
     req.partnerMemory ?? null,
-    req.marketingProfile ?? null
+    req.marketingProfile ?? null,
+    req.currentPost ?? null
   );
 
   const windowed = takeSlidingWindow(req.history);
@@ -651,28 +511,18 @@ export async function runAgentPipelineStream(
 
   let image: GeneratedImage | null = null;
   if (output.image_task.generate_image && output.image_task.prompt) {
-    const finalCheck = validateImagePrompt(output.image_task.prompt, brandDna);
-    if (!finalCheck.ok) {
-      console.warn("[router] Final guardrail blocked FAL", finalCheck.hits);
-      skipImageGeneration(
-        output,
-        "עצרתי את יצירת התמונה — הפרומפט לא עמד בכללי הנישה."
-      );
-      if (output.chat_reply !== streamedReply) {
-        emit({ type: "reply_fix", text: output.chat_reply });
-      }
-      emit({ type: "output", output, providerUsed });
-    } else if (req.deferImage) {
+    // Phase 2: no local Niche Lock gate — dual engine (FAL → Together)
+    if (req.deferImage) {
       // Close SSE after chat; client POSTs /api/regenerate-image (mobile-safe).
       console.log(
-        "[router] deferImage — generate_image=true; client will call FAL next"
+        "[router] deferImage — generate_image=true; client will call image next"
       );
       emit({ type: "status", status: "generating" });
       image = null;
     } else {
       emit({ type: "status", status: "generating" });
       try {
-        console.log("[router] Calling FAL via image-service…");
+        console.log("[router] Calling dual image-service…");
         image = await generateImage({
           prompt: output.image_task.prompt,
           aspectRatio: output.image_task.aspect_ratio,

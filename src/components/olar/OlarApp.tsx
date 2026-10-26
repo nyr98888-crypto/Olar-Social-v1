@@ -25,6 +25,13 @@ import { SettingsView } from "./views/SettingsView";
 import { DnaView } from "./views/DnaView";
 import { StudioView } from "./views/StudioView";
 import { YonaView } from "./views/YonaView";
+import { loadCurrentPost } from "@/lib/olar/current-post";
+import { persistSelectedCardToActiveCampaign } from "@/lib/store/campaign-store";
+import {
+  postCampaignToDb,
+  type SaveCampaignInput,
+} from "@/lib/olar/campaigns-client";
+import { getStudioState, setStudioVariations } from "@/lib/store";
 
 const TITLES: Record<OlarView, string> = {
   home: C.homeTitle,
@@ -47,6 +54,7 @@ export function OlarApp({
   const pathname = usePathname();
   const router = useRouter();
   const [view, setView] = useState<OlarView>(() => {
+    if (pathname === "/studio") return "studio";
     if (pathname === "/calendar") return "calendar";
     if (pathname === "/dna" || pathname?.startsWith("/dna")) return "dna";
     if (pathname?.startsWith("/settings")) return "settings";
@@ -60,6 +68,10 @@ export function OlarApp({
   const { workMode, setWorkMode, ready: modeReady } = useWorkMode();
 
   useEffect(() => {
+    if (pathname === "/studio") {
+      setView("studio");
+      return;
+    }
     if (pathname === "/calendar") {
       setView("calendar");
       return;
@@ -83,9 +95,96 @@ export function OlarApp({
     complete();
   }
 
+  /** Home → Studio: localStorage cache + SQLite POST, then /studio?id= */
+  async function handleNavigateToStudio(payload?: SaveCampaignInput) {
+    setMenuOpen(false);
+    setUserMenuOpen(false);
+
+    const cur = loadCurrentPost();
+    const studio = getStudioState();
+    const fromStudio = studio.variations?.[studio.selectedVariationIndex];
+    const headline =
+      (payload?.title || payload?.headline || "").trim() ||
+      fromStudio?.headline?.trim() ||
+      cur?.headline?.trim() ||
+      "";
+    const bodyText =
+      (payload?.bodyText || payload?.body || "").trim() ||
+      fromStudio?.bodyText?.trim() ||
+      cur?.body?.trim() ||
+      "";
+    const imageUrl =
+      payload?.imageUrl ||
+      fromStudio?.imageUrl ||
+      cur?.image_url ||
+      null;
+    const hashtags =
+      payload?.hashtags ?? cur?.hashtags ?? [];
+
+    if (headline || bodyText) {
+      const selectedCard = {
+        headline,
+        bodyText,
+        body: bodyText,
+        ctaButton: fromStudio?.ctaButton || cur?.cta || "",
+        imageUrl,
+        imagePrompt: fromStudio?.imagePrompt || cur?.image_prompt || "",
+        hashtags: Array.isArray(hashtags) ? hashtags : [],
+      };
+      persistSelectedCardToActiveCampaign(selectedCard);
+      const liveBlank =
+        !studio.variations?.[0]?.headline?.trim() ||
+        /^missing\s*card/i.test(studio.variations?.[0]?.headline || "");
+      if (liveBlank) {
+        setStudioVariations([
+          {
+            id: "var_1",
+            label: "הפוסט שלך",
+            headline,
+            bodyText,
+            ctaButton: selectedCard.ctaButton,
+            imageUrl: selectedCard.imageUrl,
+            imagePrompt: selectedCard.imagePrompt,
+          },
+          {
+            id: "var_2",
+            label: "הפוסט שלך",
+            headline,
+            bodyText,
+            ctaButton: selectedCard.ctaButton,
+            imageUrl: selectedCard.imageUrl,
+            imagePrompt: selectedCard.imagePrompt,
+          },
+        ]);
+      }
+    }
+
+    setView("studio");
+    let studioHref = "/studio";
+    if (headline || bodyText) {
+      const saved = await postCampaignToDb({
+        title: headline,
+        bodyText,
+        imageUrl,
+        hashtags,
+        niche: payload?.niche ?? null,
+        platform: payload?.platform || "Instagram",
+      });
+      if (saved?.id) {
+        studioHref = `/studio?id=${saved.id}`;
+      }
+    }
+    router.push(studioHref);
+  }
+
   function handleNavigate(next: OlarView) {
     setMenuOpen(false);
     setUserMenuOpen(false);
+
+    if (next === "studio") {
+      void handleNavigateToStudio();
+      return;
+    }
     if (next === "calendar") {
       setView("calendar");
       router.push("/calendar");
@@ -103,6 +202,7 @@ export function OlarApp({
     }
     setView(next);
     if (
+      pathname === "/studio" ||
       pathname === "/calendar" ||
       pathname === "/dna" ||
       pathname?.startsWith("/settings")
@@ -425,9 +525,9 @@ export function OlarApp({
           aria-hidden="true"
         />
         <div
-          className={`relative z-10 ${
+          className={`relative z-10 overflow-x-hidden ${
             view === "yona" || view === "studio"
-              ? "flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden px-6 lg:px-8 py-6"
+              ? "flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden px-4 py-4 sm:px-6 sm:py-6 lg:px-8"
               : isQuickHome
                 ? "olar-page-quick"
                 : view === "settings"
@@ -444,7 +544,9 @@ export function OlarApp({
             ) : (
               <DashboardView onNavigate={handleNavigate} />
             ))}
-          {view === "yona" && <YonaView />}
+          {view === "yona" && (
+            <YonaView onNavigateToStudio={handleNavigateToStudio} />
+          )}
           {view === "studio" && <StudioView />}
           {view === "calendar" && <CalendarView onNavigate={handleNavigate} />}
           {view === "leads" && <LeadsView onNavigate={handleNavigate} />}
@@ -467,7 +569,7 @@ export function OlarApp({
 
       <GlobalAgentDrawer
         activeView={view}
-        onNavigateToStudio={() => handleNavigate("studio")}
+        onNavigateToStudio={handleNavigateToStudio}
       />
     </div>
   );

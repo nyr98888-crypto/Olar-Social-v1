@@ -116,14 +116,15 @@ export function resolvePostTypeImageBias(opts: {
     return {
       biasPrompt: BEFORE_AFTER_FINISH,
       promptA: finish.slice(0, 900),
-      promptB: closeUpImagePrompt(
-        baseB || "Finished transformation craft result, detailed close-up"
+      // Option 2: in-progress / process angle of the same transformation
+      promptB: wideShotImagePrompt(
+        baseB || "Transformation work in progress, hands crafting the change"
       ),
       replaceBase: true,
     };
   }
 
-  // promotion — classic close-up vs wide A/B
+  // promotion — Option 1 finished result vs Option 2 process / human angle
   return {
     biasPrompt: null,
     promptA: closeUpImagePrompt(baseA || "Local Israeli small business craft"),

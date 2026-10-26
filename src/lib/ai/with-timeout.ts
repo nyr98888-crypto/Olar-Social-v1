@@ -36,7 +36,7 @@ export function fetchSignal(ms: number): AbortSignal | undefined {
 
 /**
  * fetch with AbortController hard cut — used by image circuit-breaker
- * (FAL 7s → Together 8s).
+ * (Together 5s primary → optional FAL 7s).
  */
 export async function fetchWithTimeout(
   url: string,

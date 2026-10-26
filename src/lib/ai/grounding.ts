@@ -4,8 +4,7 @@ import type {
   BrandGuidelines,
 } from "../../../schemas/agent";
 import { isBrandDnaComplete } from "../../../schemas/agent";
-import { hasLockedSceneLeak, type ChatTurn } from "./types";
-import { findForbiddenHits } from "./validator";
+import type { ChatTurn } from "./types";
 import {
   validateAndSanitizeAgentOutput,
   type PostInputContext,
@@ -14,8 +13,8 @@ import { extractPriceMatches } from "./guardrails";
 
 /**
  * Light post-validate helpers for the publication pipeline.
- * Price / phone stripping is owned by pipeline-validator + guardrails;
- * this module keeps intent contracts + niche lock + claim awareness.
+ * Price / phone stripping is owned by pipeline-validator + guardrails.
+ * Image Niche Lock / forbidden-word blocks removed (Phase 2 dual engine).
  */
 
 export function buildGroundingCorpus(args: {
@@ -127,19 +126,8 @@ export function enforcePublicationGrounding(
     }
   }
 
-  if (output.image_task.generate_image && output.image_task.prompt) {
-    const prompt = output.image_task.prompt;
-    const nicheHits = findForbiddenHits(
-      prompt,
-      args.brandDna?.forbidden_elements
-    );
-    if (hasLockedSceneLeak(prompt) || nicheHits.length > 0) {
-      if (hasLockedSceneLeak(prompt) && nicheHits.length === 0) {
-        output.image_task.generate_image = false;
-        delete output.image_task.prompt;
-      }
-    }
-  }
+  // Phase 2: no local Niche Lock / forbidden-word image blocks.
+  // Cloud safety checkers on FAL + Together handle moderation.
 
   return output;
 }

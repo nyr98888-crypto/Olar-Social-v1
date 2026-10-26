@@ -3,9 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { getAppSession } from "@/lib/auth/session";
 import {
   generateImage,
-  IMAGE_PLACEHOLDER_DATA_URI,
+  type ImageServiceError,
 } from "@/lib/ai/image-service";
-import { validateImagePrompt } from "@/lib/ai/validator";
 import {
   mergeBrandDna,
   parseBrandDnaPartial,
@@ -50,18 +49,8 @@ export async function POST(request: Request) {
         parseBrandDnaPartial(bodyDna ?? bodyDnaAlt),
         null
       );
-      const check = validateImagePrompt(basePrompt, brandDna);
-      if (!check.ok) {
-        return NextResponse.json(
-          {
-            error: "Niche Lock blocked image prompt",
-            forbidden_hits: check.hits,
-            generate_image: false,
-          },
-          { status: 422 }
-        );
-      }
 
+      // Direct FAL — no Niche Lock pre-block; FAL safety checker handles moderation
       const image = await generateImage({
         prompt: basePrompt,
         aspectRatio: aspectRatio ?? "1:1",
@@ -126,18 +115,6 @@ export async function POST(request: Request) {
       );
     }
 
-    const check = validateImagePrompt(basePrompt, brandDna);
-    if (!check.ok) {
-      return NextResponse.json(
-        {
-          error: "Niche Lock blocked image prompt",
-          forbidden_hits: check.hits,
-          generate_image: false,
-        },
-        { status: 422 }
-      );
-    }
-
     const image = await generateImage({
       prompt: basePrompt,
       aspectRatio: aspectRatio ?? "1:1",
@@ -170,31 +147,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, fallback: false, image, message: msg });
   } catch (err) {
     console.error(
-      "[api/regenerate-image] soft placeholder",
+      "[api/regenerate-image] failed",
       err instanceof Error ? err.message : err
     );
-    const promptHint =
-      typeof (err as { prompt?: string }).prompt === "string"
-        ? (err as { prompt: string }).prompt
-        : "brand social visual";
-    return NextResponse.json({
-      ok: true,
-      fallback: true,
-      soft_message:
-        "\u05d4\u05e4\u05d5\u05e1\u05d8 \u05de\u05d5\u05db\u05df! \u05e0\u05d9\u05ea\u05df \u05dc\u05e2\u05e8\u05d5\u05da \u05d5\u05dc\u05dc\u05d8\u05e9 \u05d0\u05d5\u05ea\u05d5 \u05db\u05e8\u05e6\u05d5\u05e0\u05da.",
-      image: {
-        url: IMAGE_PLACEHOLDER_DATA_URI,
-        seed: 0,
-        prompt: promptHint,
-      },
-      message: {
-        id: `soft-img-${Date.now()}`,
-        content:
-          "\u05d4\u05db\u05e0\u05ea\u05d9 \u05d2\u05e8\u05e1\u05d4 \u05dc\u05ea\u05e6\u05d5\u05d2\u05d4 \u2014 \u05e0\u05d9\u05ea\u05df \u05dc\u05e0\u05e1\u05d5\u05ea \u05e9\u05d5\u05d1 \u05dc\u05d9\u05e6\u05d5\u05e8 \u05d5\u05d9\u05d6\u05d5\u05d0\u05dc \u05de\u05dc\u05d0.",
-        image_url: IMAGE_PLACEHOLDER_DATA_URI,
-        image_seed: 0,
-        created_at: new Date().toISOString(),
-      },
-    });
+    const message =
+      err instanceof Error ? err.message : "Image regeneration failed";
+    const userMessageHe =
+      (err as ImageServiceError | undefined)?.userMessageHe ||
+      "לא הצלחתי לייצר ויז'ואל הפעם — אפשר לנסות שוב.";
+    const code = (err as ImageServiceError | undefined)?.code || "IMAGE_FAILED";
+    return NextResponse.json(
+      { ok: false, error: message, code, userMessageHe },
+      { status: 502 }
+    );
   }
 }

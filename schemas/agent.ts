@@ -400,9 +400,9 @@ export function derivePlatformsFromPost(
   };
 }
 
-/** Build wa.me/?text= share URL for WhatsApp card (no phone required — opens picker). */
+/** Build WhatsApp share URL (opens picker; text properly encoded). */
 export function buildWhatsAppCardShareUrl(shareText: string): string {
-  return `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+  return `https://api.whatsapp.com/send?text=${encodeURIComponent(shareText)}`;
 }
 
 /** Format WhatsApp digital card + invite into shareable Hebrew text. */

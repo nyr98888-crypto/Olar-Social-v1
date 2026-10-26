@@ -7,6 +7,8 @@ import {
   saveCurrentPost,
   syncCurrentPostToServer,
 } from "@/lib/olar/current-post";
+import { persistSelectedCardToActiveCampaign } from "@/lib/store/campaign-store";
+import type { SaveCampaignInput } from "@/lib/olar/campaigns-client";
 import { brandGuidelinesFromBusinessProfile } from "@/lib/ai/partner-memory";
 import type { PlatformPosts, SocialPostFields } from "../../../../schemas/agent";
 import { C } from "@/lib/olar/ui-copy";
@@ -16,6 +18,7 @@ import {
   type BusinessCategoryId,
 } from "@/lib/olar/business-categories";
 import { getCategoryFallback } from "@/lib/olar/category-fallbacks";
+import { CLIENT_IMAGE_TIMEOUT_MS } from "@/lib/api/fetch-with-retry";
 import {
   getSpeechRecognitionCtor,
   type SpeechRecognitionLike,
@@ -55,7 +58,11 @@ type Msg = {
 
 /* ── Component ─────────────────────────────────────── */
 
-export function YonaView() {
+export function YonaView({
+  onNavigateToStudio,
+}: {
+  onNavigateToStudio?: (payload?: SaveCampaignInput) => void | Promise<void>;
+} = {}) {
   const { page } = useResolvedMyPage();
 
   /* Chat state */
@@ -95,6 +102,7 @@ export function YonaView() {
 
   /* UI */
   const [toast, setToast] = useState<string | null>(null);
+  const [mobilePane, setMobilePane] = useState<"preview" | "chat">("preview");
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -180,6 +188,17 @@ export function YonaView() {
           businessProfile: profile || undefined,
           history: slidingHistory,
           previousImagePrompt: pendingImagePrompt,
+          currentPost: currentPost
+            ? {
+                headline: currentPost.headline,
+                body: currentPost.body,
+                bodyText: currentPost.body,
+                cta: currentPost.call_to_action || "",
+                ctaButton: currentPost.call_to_action || "",
+                imageUrl,
+                hashtags: currentPost.hashtags || [],
+              }
+            : null,
         }),
         signal: AbortSignal.timeout(12_000),
       });
@@ -248,6 +267,16 @@ export function YonaView() {
           network: previewChannelToNetwork(previewChannel),
         });
         void syncCurrentPostToServer(saved);
+        // Keep studio handoff key in sync so "המשך לעריכה" never shows Missing Card
+        persistSelectedCardToActiveCampaign({
+          headline: cleaned.headline,
+          bodyText: cleaned.body,
+          body: cleaned.body,
+          ctaButton: cleaned.call_to_action || "",
+          imageUrl,
+          hashtags: cleaned.hashtags,
+          businessName: page.businessName || "",
+        });
       }
 
       // Handle image already returned — never clear on channel switch
@@ -266,6 +295,16 @@ export function YonaView() {
             network: previewChannelToNetwork(previewChannel),
           });
           void syncCurrentPostToServer(saved);
+          persistSelectedCardToActiveCampaign({
+            headline: socialPost.headline,
+            bodyText: socialPost.body,
+            body: socialPost.body,
+            ctaButton: socialPost.call_to_action || "",
+            imageUrl: data.image.url,
+            imagePrompt: data.image.prompt || "",
+            hashtags: socialPost.hashtags,
+            businessName: page.businessName || "",
+          });
         }
       }
 
@@ -312,9 +351,7 @@ export function YonaView() {
       "@/lib/olar/image-cache-bust"
     );
     const newSeed = Math.floor(Math.random() * 2147483647);
-    const updatedPrompt = withRegenAngleHint(
-      `${desc}, dynamic close-up angle, professional garage lighting`
-    );
+    const updatedPrompt = withRegenAngleHint(desc);
     setImageUrl(null);
     setImageLoading(true);
     setImagePending(false);
@@ -336,7 +373,7 @@ export function YonaView() {
           regenerate: true,
           previousPrompt: loadCurrentPost()?.image_prompt || null,
         }),
-        signal: AbortSignal.timeout(45_000),
+        signal: AbortSignal.timeout(CLIENT_IMAGE_TIMEOUT_MS),
       });
       const data = (await res.json().catch(() => ({}))) as {
         fallback?: boolean;
@@ -658,7 +695,46 @@ export function YonaView() {
       </button>
 
       {previewPost && currentPost ? (
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-col gap-2">
+          {onNavigateToStudio ? (
+            <button
+              type="button"
+              onClick={() => {
+                const payload: SaveCampaignInput = {
+                  headline: currentPost.headline,
+                  bodyText: currentPost.body,
+                  body: currentPost.body,
+                  imageUrl,
+                  hashtags: currentPost.hashtags || [],
+                  platform: "Instagram",
+                };
+                persistSelectedCardToActiveCampaign({
+                  headline: currentPost.headline,
+                  bodyText: currentPost.body,
+                  body: currentPost.body,
+                  ctaButton: currentPost.call_to_action || "",
+                  imageUrl,
+                  hashtags: currentPost.hashtags || [],
+                  businessName: page.businessName || "",
+                });
+                const saved = saveCurrentPost({
+                  headline: currentPost.headline,
+                  body: currentPost.body,
+                  cta: currentPost.call_to_action || "",
+                  hashtags: currentPost.hashtags || [],
+                  image_url: imageUrl,
+                  network: previewChannelToNetwork(previewChannel),
+                });
+                void syncCurrentPostToServer(saved);
+                void onNavigateToStudio?.(payload);
+              }}
+              className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-cyan-600 px-4 text-base font-bold text-white shadow-md hover:bg-cyan-500"
+            >
+              <Sparkles className="h-4 w-4" />
+              המשך לעריכה בסטודיו
+            </button>
+          ) : null}
+          <div className="flex flex-col gap-2 sm:flex-row">
           <button
             type="button"
             onClick={() => void copyPlatformText()}
@@ -677,6 +753,7 @@ export function YonaView() {
               {C.sendWaCard || C.waSendCard}
             </button>
           ) : null}
+          </div>
         </div>
       ) : null}
     </div>
@@ -684,7 +761,7 @@ export function YonaView() {
 
   return (
     <div
-      className="relative flex h-full min-h-0 w-full flex-col overflow-x-hidden"
+      className="relative flex h-full min-h-0 w-full flex-col overflow-x-hidden overflow-hidden"
       dir="rtl"
     >
       {/* Toast */}
@@ -703,10 +780,51 @@ export function YonaView() {
         onChange={handleImageUpload}
       />
 
-      {/* Desktop: side-by-side. Mobile: single column */}
-      <div className="flex h-full min-h-0 w-full flex-col gap-6 overflow-hidden lg:flex-row">
+      {/* Mobile pane switch — preview first by default */}
+      <div className="mb-3 flex w-full shrink-0 gap-2 rounded-2xl bg-accent-soft/50 p-1 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setMobilePane("preview")}
+          className={`flex min-h-12 flex-1 items-center justify-center rounded-xl text-base font-bold transition ${
+            mobilePane === "preview"
+              ? "border border-accent bg-white text-slate-900 shadow-md"
+              : "text-slate-700 hover:bg-white/70"
+          }`}
+        >
+          תצוגה
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobilePane("chat")}
+          className={`flex min-h-12 flex-1 items-center justify-center rounded-xl text-base font-bold transition ${
+            mobilePane === "chat"
+              ? "border border-accent bg-white text-slate-900 shadow-md"
+              : "text-slate-700 hover:bg-white/70"
+          }`}
+        >
+          צ&apos;אט
+        </button>
+      </div>
+
+      {/* Stack below lg; two columns from lg */}
+      <div className="flex h-full min-h-0 w-full flex-col gap-6 overflow-x-hidden overflow-hidden lg:grid lg:grid-cols-2">
+        {/* Preview */}
+        <aside
+          className={`min-h-0 min-w-0 flex-col overflow-hidden ${
+            mobilePane === "preview" ? "flex" : "hidden"
+          } lg:order-2 lg:flex`}
+        >
+          <div className="flex h-full max-h-full flex-col overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 lg:max-h-[calc(100vh-120px)]">
+            {previewCard}
+          </div>
+        </aside>
+
         {/* Chat column */}
-        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden lg:flex-[1.2]">
+        <section
+          className={`min-h-0 min-w-0 flex-col overflow-hidden ${
+            mobilePane === "chat" ? "flex" : "hidden"
+          } lg:order-1 lg:flex`}
+        >
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pb-4">
             {/* Header */}
             <div className="space-y-3 border-b border-slate-300 bg-white pb-4">
@@ -715,7 +833,7 @@ export function YonaView() {
                   {C.humanNotBot}
                 </span>
                 <div className="flex items-center gap-3">
-                  <h1 className="text-right text-xl font-bold text-slate-800">
+                  <h1 className="text-right text-xl font-bold text-slate-800 sm:text-2xl lg:text-3xl">
                     {C.yonaTitle}
                   </h1>
                   <AgentAvatar size="md" />
@@ -862,17 +980,8 @@ export function YonaView() {
               </div>
             </div>
 
-            {/* Mobile: preview below form */}
-            <div className="pb-28 pt-4 lg:hidden">{previewCard}</div>
           </div>
         </section>
-
-        {/* Desktop sticky Live Preview */}
-        <aside className="hidden min-h-0 lg:flex lg:flex-[0.8] lg:flex-col">
-          <div className="flex h-full flex-col lg:max-h-[calc(100vh-120px)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4">
-            {previewCard}
-          </div>
-        </aside>
       </div>
     </div>
   );

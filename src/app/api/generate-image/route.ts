@@ -1,20 +1,19 @@
 /**
- * Visual Art Director + image circuit-breaker:
- * 1) LLM Art Director (Hebrew/any → English FLUX prompt)
- * 2) Safety regex guardrail
- * 3) FAL flux/schnell (7s) → Together FLUX.1-schnell (8s) → Unsplash category
- * Soft success — never crash UI; never send Hebrew to Flux providers.
+ * Visual Art Director + direct FAL.ai fal-ai/flux/schnell.
+ * No circuit breaker, no Niche Lock prompt blocks, no static placeholder success.
  */
 import { NextResponse } from "next/server";
 import { getAppSession } from "@/lib/auth/session";
 import {
   generateImage,
   IMAGE_HARD_TIMEOUT_MS,
-  IMAGE_PLACEHOLDER_DATA_URI,
+  type ImageServiceError,
 } from "@/lib/ai/image-service";
 import { translateToFalEnglishPrompt } from "@/lib/ai/translate-visual-prompt";
-import type { FalVisualPurpose } from "@/lib/ai/fal-visual-prompt";
-import { FALLBACK_SOFT_READY_HE } from "@/lib/ai/fallback-content";
+import {
+  hasHebrewScript,
+  type FalVisualPurpose,
+} from "@/lib/ai/fal-visual-prompt";
 import {
   disambiguateBusinessDomain,
   enrichBrandDnaFromDomain,
@@ -25,7 +24,6 @@ import {
   normalizeCategory,
   type BusinessCategoryId,
 } from "@/lib/olar/business-categories";
-import { getCategoryFallback } from "@/lib/olar/category-fallbacks";
 import {
   extractDishFromText,
   resolveDishBiasedPrompt,
@@ -34,7 +32,10 @@ import {
   extractTradeFromText,
   resolveTradeBiasedPrompt,
 } from "@/lib/ai/trade-prompt";
-import { resolveCreativeStudioLock } from "@/lib/ai/hebrew-visual-context";
+import {
+  resolveCreativeStudioLock,
+  resolveLocksmithLock,
+} from "@/lib/ai/hebrew-visual-context";
 import {
   buildAnchorFluxPrompts,
   resolveEnglishImageAnchors,
@@ -45,52 +46,49 @@ import { withTimeout } from "@/lib/ai/with-timeout";
 import { randomFalSeed } from "@/lib/ai/types";
 
 export const runtime = "nodejs";
+/** Allow full FAL subscribe budget (~45s) + Art Director. */
 export const maxDuration = 60;
 
-function okPayload(data: Record<string, unknown>, fallback = false) {
+function okPayload(data: Record<string, unknown>) {
   return {
     ok: true as const,
-    fallback,
-    isFallback: fallback,
-    soft_message: FALLBACK_SOFT_READY_HE,
+    fallback: false,
+    isFallback: false,
     ...data,
   };
 }
 
-function unsplashFallbackPayload(
-  category: BusinessCategoryId | null,
-  englishPrompt: string,
-  source: string,
-  userText?: string | null,
-  seed?: number
-) {
-  const pickSeed =
-    typeof seed === "number" && Number.isFinite(seed)
-      ? seed
-      : Math.floor(Math.random() * 2147483647);
-  const url = getCategoryFallback(category, userText, pickSeed);
-  console.log("[Image Gen] 🛡️ Serving curated category/dish fallback", {
-    category,
-    dish: extractDishFromText(userText || "")?.id ?? null,
-    seed: pickSeed,
-  });
-  const stamped = `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}&s=${pickSeed}`;
-  return okPayload(
+function errorStatus(err: unknown): number {
+  if (err && typeof err === "object" && "status" in err) {
+    const s = (err as { status?: number }).status;
+    if (typeof s === "number" && s >= 400 && s < 600) return s;
+  }
+  const code = (err as ImageServiceError | undefined)?.code;
+  if (code === "FAL_MISSING_KEY" || code === "KEYS_MISSING") return 503;
+  if (code === "FAL_TIMEOUT") return 504;
+  if (code === "IMAGE_ALL_FAILED" || code === "FAL_FAILED" || code === "FAL_EMPTY")
+    return 502;
+  if (err instanceof Error && /timed out/i.test(err.message)) return 504;
+  return 502;
+}
+
+function errorJson(err: unknown, englishPrompt?: string, source?: string) {
+  const message =
+    err instanceof Error ? err.message : "Image generation failed";
+  const userMessageHe =
+    (err as ImageServiceError | undefined)?.userMessageHe ||
+    "לא הצלחתי לייצר ויז'ואל הפעם — אפשר לנסות שוב.";
+  const code = (err as ImageServiceError | undefined)?.code || "IMAGE_FAILED";
+  return NextResponse.json(
     {
-      image: {
-        url: stamped,
-        seed: pickSeed,
-        prompt: englishPrompt,
-        provider: "static-fallback",
-      },
-      imageUrl: stamped,
-      provider: "static-fallback",
+      ok: false,
+      error: message,
+      code,
+      userMessageHe,
       english_prompt: englishPrompt,
       prompt_source: source,
-      category,
-      fallback_source: "unsplash",
     },
-    true
+    { status: errorStatus(err) }
   );
 }
 
@@ -128,12 +126,11 @@ export async function POST(request: Request) {
     const forceRegen = Boolean(
       body.bustCache || body.regenerate || body.seed != null
     );
+    // Always a real seed — regenerates + first paint get fresh latents
     const clientSeed =
       typeof body.seed === "number" && Number.isFinite(body.seed)
         ? Math.floor(Math.abs(body.seed)) % 2147483647
-        : forceRegen
-          ? randomFalSeed()
-          : undefined;
+        : randomFalSeed();
 
     const purpose: FalVisualPurpose =
       body.purpose ||
@@ -170,7 +167,8 @@ export async function POST(request: Request) {
         businessName: body.businessName,
         category,
       });
-      englishPrompt = buildAnchorFluxPrompts(englishAnchors || imageAnchorWords, {
+      const subject = englishAnchors || imageAnchorWords;
+      englishPrompt = buildAnchorFluxPrompts(subject, {
         userText: description,
         niche,
         category,
@@ -179,29 +177,39 @@ export async function POST(request: Request) {
       source = "image-anchors";
       console.log("[api/generate-image] Image anchors active", {
         sample: englishPrompt.slice(0, 120),
+        translated: Boolean(englishAnchors && englishAnchors !== imageAnchorWords),
+        hebrewRemaining: hasHebrewScript(subject),
       });
     } else {
-      // Hard locks BEFORE Art Director — dish / creative-studio / body-shop
-      // Creative studio MUST beat automotive "workshop" mistranslation of סדנה
+      // Subject bias helpers (prompt shaping only — never block FAL)
       const dishForced = resolveDishBiasedPrompt({
         description,
         niche,
         category,
       });
-      const creativeForced = resolveCreativeStudioLock({
+      const locksmithForced = resolveLocksmithLock({
         description,
         niche,
         category,
         businessName: body.businessName,
       });
-      const tradeForced = creativeForced
+      const creativeForced = locksmithForced
         ? null
-        : resolveTradeBiasedPrompt({
+        : resolveCreativeStudioLock({
             description,
             niche,
             category,
             businessName: body.businessName,
           });
+      const tradeForced =
+        locksmithForced || creativeForced
+          ? null
+          : resolveTradeBiasedPrompt({
+              description,
+              niche,
+              category,
+              businessName: body.businessName,
+            });
       tradeHit = tradeForced
         ? extractTradeFromText(
             [description, niche, category].filter(Boolean).join(" ")
@@ -211,23 +219,15 @@ export async function POST(request: Request) {
       if (dishForced) {
         englishPrompt = dishForced;
         source = `dish-lock:${dishHit?.id || "food"}`;
-        console.log("[api/generate-image] Dish lock active", {
-          dish: dishHit?.id,
-          sample: englishPrompt.slice(0, 120),
-        });
+      } else if (locksmithForced) {
+        englishPrompt = locksmithForced;
+        source = "locksmith-door-lock";
       } else if (creativeForced) {
         englishPrompt = creativeForced;
         source = "creative-studio-lock";
-        console.log("[api/generate-image] Creative studio lock active", {
-          sample: englishPrompt.slice(0, 120),
-        });
       } else if (tradeForced) {
         englishPrompt = tradeForced;
         source = `trade-lock:${tradeHit?.id || "trade"}`;
-        console.log("[api/generate-image] Trade lock active", {
-          trade: tradeHit?.id,
-          sample: englishPrompt.slice(0, 120),
-        });
       } else {
         const translated = await translateToFalEnglishPrompt({
           description:
@@ -252,18 +252,12 @@ export async function POST(request: Request) {
       source = `${source}+regen-angle`;
     }
 
-    console.log("[api/generate-image] Art Director ready", {
+    console.log("[api/generate-image] Art Director ready → direct FAL", {
       source,
       category,
-      lockedCategory: category,
-      domainId: domainHit?.domain.id ?? null,
-      dish: dishHit?.id ?? null,
-      trade: tradeHit?.id ?? null,
-      seed: clientSeed ?? null,
-      bustCache: body.bustCache ?? null,
+      seed: clientSeed,
       purpose,
       hasFalKey: Boolean(process.env.FAL_KEY?.trim()),
-      hasTogetherKey: Boolean(process.env.TOGETHER_API_KEY?.trim()),
       sample: englishPrompt.slice(0, 160),
     });
 
@@ -280,77 +274,56 @@ export async function POST(request: Request) {
           purpose: purpose === "headshot" ? "headshot" : "post",
           userContext: description || null,
           previousPrompt: body.previousPrompt || null,
-          fallbackPlaceholder: false,
-          englishReady: true,
+          englishReady: !hasHebrewScript(englishPrompt),
           seed: clientSeed,
         }),
         IMAGE_HARD_TIMEOUT_MS,
-        "image circuit-breaker route"
+        "direct FAL route"
       );
 
-      const isPlaceholder =
+      if (
         !image.url ||
         image.url.startsWith("data:image/svg") ||
-        image.url === IMAGE_PLACEHOLDER_DATA_URI ||
-        image.provider === "static-fallback";
-
-      if (isPlaceholder) {
-        return NextResponse.json(
-          unsplashFallbackPayload(
-            category,
-            englishPrompt,
-            source,
-            description,
-            clientSeed
-          )
+        image.provider === "static-fallback"
+      ) {
+        console.error("[api/generate-image] invalid/placeholder image rejected");
+        return errorJson(
+          new Error("Image provider returned placeholder or empty URL"),
+          englishPrompt,
+          source
         );
       }
 
       const provider = image.provider || "fal";
       const rawUrl = image.url;
-      const imageUrl = forceRegen
-        ? `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}t=${Date.now()}&seed=${image.seed ?? clientSeed ?? 0}`
-        : rawUrl;
+      const imageUrl = `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}t=${Date.now()}&seed=${image.seed ?? clientSeed}`;
       return NextResponse.json(
-        okPayload(
-          {
-            image: {
-              url: imageUrl,
-              seed: image.seed ?? clientSeed ?? 0,
-              prompt: image.prompt,
-              provider,
-            },
-            imageUrl,
+        okPayload({
+          image: {
+            url: imageUrl,
+            seed: image.seed ?? clientSeed ?? 0,
+            prompt: image.prompt,
             provider,
-            english_prompt: englishPrompt,
-            prompt_source: source,
-            category,
           },
-          false
-        )
+          imageUrl,
+          provider,
+          english_prompt: englishPrompt,
+          prompt_source: source,
+          category,
+        })
       );
     } catch (err) {
       console.error(
-        "[api/generate-image] providers soft fail → Unsplash",
+        "[api/generate-image] FAL failed",
         err instanceof Error ? err.message : err
       );
-      return NextResponse.json(
-        unsplashFallbackPayload(
-          category,
-          englishPrompt,
-          source,
-          description,
-          clientSeed
-        )
-      );
+      return errorJson(err, englishPrompt, source);
     }
   } catch (err) {
     console.error(
-      "[api/generate-image] route error → Unsplash",
+      "[api/generate-image] route error",
       err instanceof Error ? err.message : err
     );
-    return NextResponse.json(
-      unsplashFallbackPayload(category, englishPrompt, source, null, undefined)
-    );
+    return errorJson(err, englishPrompt, source);
   }
 }

@@ -39,6 +39,13 @@ export function softAiFallbackJson(opts: {
     imagePending: false,
     providerUsed: "fallback:golden-template",
     status: "replied",
+    reply: output.chat_reply,
+    cardUpdate: {
+      title: output.social_post?.headline?.trim() || null,
+      bodyText: output.social_post?.body?.trim() || null,
+    },
+    updatedTitle: output.social_post?.headline?.trim() || undefined,
+    updatedBodyText: output.social_post?.body?.trim() || undefined,
     ...opts.extra,
   });
 }

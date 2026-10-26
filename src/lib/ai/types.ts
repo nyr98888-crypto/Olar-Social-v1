@@ -19,6 +19,17 @@ export interface ReferenceImage {
   data: string;
 }
 
+/** Active post shown in Studio / home preview — injected into Maya system context. */
+export interface ActivePostContext {
+  headline?: string;
+  body?: string;
+  bodyText?: string;
+  cta?: string;
+  ctaButton?: string;
+  imageUrl?: string | null;
+  hashtags?: string[];
+}
+
 export interface AgentRequest {
   userMessage: string;
   history: ChatTurn[];
@@ -29,6 +40,8 @@ export interface AgentRequest {
   partnerMemory?: PartnerMemory | null;
   /** Wingman activity memory (posts, wins) from user_marketing_profiles. */
   marketingProfile?: UserMarketingProfile | null;
+  /** Exact post currently on the left card — Maya must acknowledge / edit this. */
+  currentPost?: ActivePostContext | null;
   referenceImages?: ReferenceImage[];
   /** Anti-lock comparison only — never inject into chat history as a template. */
   previousImagePrompt?: string | null;
@@ -39,7 +52,11 @@ export interface AgentRequest {
   deferImage?: boolean;
 }
 
-export type ImageProviderId = "fal" | "together" | "static-fallback";
+export type ImageProviderId =
+  | "fal"
+  | "openrouter"
+  | "together"
+  | "static-fallback";
 
 export interface GeneratedImage {
   url: string;

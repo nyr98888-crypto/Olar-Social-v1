@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Keep native libSQL out of the webpack graph (avoids MODULE_NOT_FOUND / corrupt .next chunks)
+  serverExternalPackages: ["@libsql/client"],
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "**.fal.media" },

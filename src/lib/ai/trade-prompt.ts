@@ -15,6 +15,28 @@ export type TradeHint = {
 
 export const TRADE_MAP: TradeHint[] = [
   {
+    id: "locksmith_door",
+    keys: [
+      "מנעולן",
+      "מנעולנות",
+      "צילינדר",
+      "צילינדרים",
+      "פריצה",
+      "פריצות",
+      "פתיחת דלת",
+      "פתיחת דלתות",
+      "מנעול דלת",
+      "מנעולים",
+      "החלפת מנעול",
+      "locksmith",
+      "door lock",
+      "cylinder lock",
+      "deadbolt",
+    ],
+    englishPrompt:
+      "Professional certified locksmith at a residential wooden front door, installing or opening a door cylinder lock with professional locksmith tools, bright daylight, trustworthy commercial trades photography, 8k photorealistic. avoid: cars, car engine, automotive garage, spray booth, mechanic, auto repair, burglar, thief, masked criminal, crime scene, violence, broken glass, dark alley",
+  },
+  {
     id: "gel_nails",
     keys: [
       "ציפורניים",

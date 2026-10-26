@@ -1,11 +1,12 @@
 /** Force-fresh image generation helpers (seed + angle + browser cache bust). */
 
+/** Neutral camera hints — never bake garage/auto scenes into unrelated niches. */
 const ANGLE_HINTS = [
-  "dynamic close-up angle, professional garage lighting",
+  "dynamic close-up angle, bright commercial daylight",
   "alternative angle, dynamic close-up perspective",
-  "slightly wider framing, three-quarter view, bright workshop light",
+  "slightly wider framing, three-quarter view, soft natural light",
   "low angle hero shot, crisp detail, commercial daylight",
-  "side profile angle, shallow depth of field, clean industrial lighting",
+  "side profile angle, shallow depth of field, clean professional lighting",
 ] as const;
 
 export function randomImageSeed(): number {

@@ -23,6 +23,12 @@ import {
   openGoogleCalendar,
   updateCalendarEvent,
 } from "@/lib/olar/calendar-client";
+import {
+  ONE_LOOP_SCHEDULED_POSTS_KEY,
+  removeScheduledPost,
+  useCampaignStore,
+  type ScheduledPost,
+} from "@/lib/store/campaign-store";
 import { FooterBrand } from "@/components/olar/FooterBrand";
 import {
   CalendarDays,
@@ -37,6 +43,48 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+
+/** Convert a local scheduled post → calendar chip (from `one_loop_scheduled_posts`). */
+function scheduledPostToEvent(p: ScheduledPost): CalendarEventRecord {
+  const start = new Date(p.scheduledAt);
+  const end = new Date(start.getTime() + 30 * 60 * 1000);
+  const title = `פוסט: ${(p.headline || "מתוזמן").slice(0, 80)}`;
+  const description = [p.bodyText, p.imageUrl ? `תמונה: ${p.imageUrl}` : ""]
+    .filter(Boolean)
+    .join("\n\n");
+  return {
+    id: p.id,
+    title,
+    description: description || null,
+    start_time: start.toISOString(),
+    end_time: end.toISOString(),
+    event_type: "post",
+    status: "scheduled",
+    reminder_minutes: 30,
+    google_event_id: null,
+    service_type: "פוסט מתוזמן",
+  };
+}
+
+/** Direct localStorage read for `one_loop_scheduled_posts` (guest / F5 sync). */
+function readScheduledPostsKey(): ScheduledPost[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem("one_loop_scheduled_posts");
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (p): p is ScheduledPost =>
+        Boolean(p) &&
+        typeof p === "object" &&
+        typeof (p as ScheduledPost).id === "string" &&
+        typeof (p as ScheduledPost).scheduledAt === "string"
+    );
+  } catch {
+    return [];
+  }
+}
 
 const DAY_LABELS = ["א׳", "ב׳", "ג׳", "ד׳", "ה׳", "ו׳", "ש׳"];
 const MONTH_LABELS = [
@@ -128,6 +176,7 @@ export function CalendarView({
 }: {
   onNavigate?: (view: OlarView) => void;
 }) {
+  const { scheduledPosts } = useCampaignStore();
   const [mode, setMode] = useState<CalMode>("week");
   const [cursor, setCursor] = useState(() => {
     const d = new Date();
@@ -135,6 +184,7 @@ export function CalendarView({
     return d;
   });
   const [events, setEvents] = useState<CalendarEventRecord[]>([]);
+  const [localScheduled, setLocalScheduled] = useState<ScheduledPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -182,6 +232,8 @@ export function CalendarView({
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    // Always hydrate from `one_loop_scheduled_posts` (local calendar posts)
+    setLocalScheduled(readScheduledPostsKey());
     try {
       const from = addDays(startOfWeek(new Date()), -30);
       const to = addDays(startOfWeek(new Date()), 180);
@@ -202,16 +254,41 @@ export function CalendarView({
     void refresh();
   }, [refresh]);
 
+  // Keep in sync when Studio schedules a post into the campaign store
+  useEffect(() => {
+    setLocalScheduled(scheduledPosts.length ? scheduledPosts : readScheduledPostsKey());
+  }, [scheduledPosts]);
+
+  // storage event (other tab) — key must match ONE_LOOP_SCHEDULED_POSTS_KEY
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key === ONE_LOOP_SCHEDULED_POSTS_KEY || e.key === "one_loop_scheduled_posts") {
+        setLocalScheduled(readScheduledPostsKey());
+      }
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  const mergedEvents = useMemo(() => {
+    const fromLocal = localScheduled.map(scheduledPostToEvent);
+    const localIds = new Set(fromLocal.map((e) => e.id));
+    const fromApi = events.filter((e) => !localIds.has(e.id));
+    return [...fromApi, ...fromLocal].sort((a, b) =>
+      a.start_time.localeCompare(b.start_time)
+    );
+  }, [events, localScheduled]);
+
   const byDate = useMemo(() => {
     const map = new Map<string, CalendarEventRecord[]>();
-    for (const ev of events) {
+    for (const ev of mergedEvents) {
       const key = isoToLocalDate(ev.start_time);
       if (!key) continue;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(ev);
     }
     return map;
-  }, [events]);
+  }, [mergedEvents]);
 
   function openModalForSlot(date: string, time: string) {
     setEditingId(null);
@@ -332,17 +409,23 @@ export function CalendarView({
   }
 
   async function removeEvent(id: string) {
+    const isLocal = localScheduled.some((p) => p.id === id) || id.startsWith("sched_");
+    if (isLocal) {
+      removeScheduledPost(id);
+      setLocalScheduled((prev) => prev.filter((p) => p.id !== id));
+      return;
+    }
     const ok = await deleteCalendarEvent(id);
     if (ok) setEvents((prev) => prev.filter((e) => e.id !== id));
   }
 
   async function handleExport() {
-    if (events.length === 0) {
+    if (mergedEvents.length === 0) {
       setModalOpen(true);
       return;
     }
-    await exportCalendarIcs(events);
-    const last = events[events.length - 1];
+    await exportCalendarIcs(mergedEvents);
+    const last = mergedEvents[mergedEvents.length - 1];
     if (last) openGoogleCalendar(last);
     setToast("קובץ .ics הורד — ניתן לייבא ל-Apple / Google Calendar");
   }
@@ -695,7 +778,7 @@ export function CalendarView({
         </div>
       )}
 
-      {events.length === 0 && !loading ? (
+      {mergedEvents.length === 0 && !loading ? (
         <div className="space-y-2 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-8 text-center">
           <p className="text-base font-medium text-slate-700">
             {C.emptyDashboardStats}
@@ -960,7 +1043,7 @@ export function CalendarView({
               type="button"
               onClick={() => {
                 if (editingId) {
-                  const ev = events.find((e) => e.id === editingId);
+                  const ev = mergedEvents.find((e) => e.id === editingId);
                   if (ev) {
                     openGoogleCalendar(ev);
                     void exportCalendarIcs([ev]);

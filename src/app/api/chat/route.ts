@@ -5,6 +5,10 @@ import { runAgentPipeline } from "@/lib/ai/router";
 import { FALLBACK_SOFT_READY_HE } from "@/lib/ai/fallback-content";
 import { softAiFallbackJson } from "@/lib/ai/soft-response";
 import {
+  isOpenRouterConfigured,
+  OPENROUTER_MISSING_KEY_HE,
+} from "@/lib/ai/providers/openrouter";
+import {
   normalizeReferenceImages,
   type ChatTurn,
   type ReferenceImage,
@@ -22,9 +26,20 @@ import {
   type BusinessProfileLike,
 } from "@/lib/ai/partner-memory";
 import { getMarketingProfile } from "@/lib/olar/user-marketing-profile";
+import { getCampaignById } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+interface CurrentPostBody {
+  headline?: string;
+  body?: string;
+  bodyText?: string;
+  cta?: string;
+  ctaButton?: string;
+  imageUrl?: string | null;
+  hashtags?: string[];
+}
 
 interface ChatBody {
   conversationId?: string;
@@ -47,6 +62,69 @@ interface ChatBody {
   routeContext?: string | null;
   /** Hebrew route hint injected as system context */
   routeHint?: string | null;
+  /** Exact post on the left preview card — Maya must see this */
+  currentPost?: CurrentPostBody | null;
+  /** SQLite campaign id — authoritative when present */
+  campaignId?: number | string | null;
+}
+
+function normalizeCurrentPost(
+  raw: CurrentPostBody | null | undefined
+): CurrentPostBody | null {
+  if (!raw || typeof raw !== "object") return null;
+  const headline = (raw.headline || "").trim();
+  const body = (raw.bodyText || raw.body || "").trim();
+  if (!headline && !body) return null;
+  if (/^missing\s*card/i.test(headline)) return null;
+  return {
+    headline,
+    body,
+    bodyText: body,
+    cta: (raw.ctaButton || raw.cta || "").trim(),
+    ctaButton: (raw.ctaButton || raw.cta || "").trim(),
+    imageUrl: raw.imageUrl || null,
+    hashtags: Array.isArray(raw.hashtags) ? raw.hashtags : [],
+  };
+}
+
+async function resolveCurrentPost(
+  body: ChatBody
+): Promise<CurrentPostBody | null> {
+  const rawId = body.campaignId;
+  const id =
+    typeof rawId === "number"
+      ? rawId
+      : typeof rawId === "string"
+        ? Number.parseInt(rawId, 10)
+        : NaN;
+  if (Number.isFinite(id) && id > 0) {
+    try {
+      const row = await getCampaignById(id);
+      if (row) {
+        return {
+          headline: row.title,
+          body: row.bodyText,
+          bodyText: row.bodyText,
+          imageUrl: row.imageUrl || null,
+          hashtags: row.hashtags
+            ? row.hashtags.split(/\s+/).filter(Boolean)
+            : [],
+        };
+      }
+    } catch (err) {
+      console.warn("[api/chat] campaign DB lookup failed", err);
+    }
+  }
+  return normalizeCurrentPost(body.currentPost);
+}
+
+/** Hebrew Maya context prepended when an active campaign exists. */
+function mayaCampaignRouteHint(post: CurrentPostBody | null): string {
+  if (!post) return "";
+  const title = (post.headline || "").trim();
+  const bodyText = (post.bodyText || post.body || "").trim();
+  if (!title && !bodyText) return "";
+  return `את מאיה, מנהלת השיווק הדיגיטלי. הפוסט הנוכחי המוצג ללקוח הוא: כותרת: "${title}", גוף הפוסט: "${bodyText}". אם הלקוח מבקש לשנות נוסח, החזירי JSON עם reply + cardUpdate: { "title": "..." או null, "bodyText": "..." או null }. אפשר גם updatedTitle/updatedBodyText לתאימות לאחור.`;
 }
 
 function withSoftFlags(
@@ -68,6 +146,13 @@ export async function POST(request: Request) {
     const session = await getAppSession();
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (!isOpenRouterConfigured()) {
+      return NextResponse.json(
+        { ok: false, error: OPENROUTER_MISSING_KEY_HE },
+        { status: 503 }
+      );
     }
 
     const body = (await request.json()) as ChatBody;
@@ -109,17 +194,21 @@ export async function POST(request: Request) {
       );
 
       // Inject route context as a system-level hint prepended to user message
-      const routePrefix = body.routeHint?.trim()
-        ? `${body.routeHint.trim()}\n`
-        : "";
+      const guestCurrentPost = await resolveCurrentPost(body);
+      const mayaHint = mayaCampaignRouteHint(guestCurrentPost);
+      const routePrefix = [mayaHint, body.routeHint?.trim()]
+        .filter(Boolean)
+        .join("\n");
 
       // Defer FAL so mobile/Vercel get chat_reply fast; client follows up for image.
       const result = await runAgentPipeline({
-        userMessage: routePrefix + body.message.trim(),
+        userMessage:
+          (routePrefix ? `${routePrefix}\n` : "") + body.message.trim(),
         history,
         brandGuidelines: guestBrand,
         brandDna: guestDna,
         partnerMemory,
+        currentPost: guestCurrentPost,
         referenceImages:
           referenceImages.length > 0 ? referenceImages : undefined,
         previousImagePrompt: body.previousImagePrompt ?? null,
@@ -143,6 +232,11 @@ export async function POST(request: Request) {
         created_at: new Date().toISOString(),
       };
 
+      const guestUpdatedTitle =
+        output.social_post?.headline?.trim() || undefined;
+      const guestUpdatedBody =
+        output.social_post?.body?.trim() || undefined;
+
       return NextResponse.json(
         withSoftFlags(
           {
@@ -155,6 +249,13 @@ export async function POST(request: Request) {
             ),
             providerUsed: result.providerUsed,
             guestMode: true,
+            reply: output.chat_reply,
+            cardUpdate: {
+              title: guestUpdatedTitle ?? null,
+              bodyText: guestUpdatedBody ?? null,
+            },
+            updatedTitle: guestUpdatedTitle,
+            updatedBodyText: guestUpdatedBody,
             status: image
               ? "generated_visual"
               : result.visionNotes
@@ -273,17 +374,21 @@ export async function POST(request: Request) {
       content: body.message.trim(),
     });
 
-    const authRoutePrefix = body.routeHint?.trim()
-      ? `${body.routeHint.trim()}\n`
-      : "";
+    const authCurrentPost = await resolveCurrentPost(body);
+    const authMayaHint = mayaCampaignRouteHint(authCurrentPost);
+    const authRoutePrefix = [authMayaHint, body.routeHint?.trim()]
+      .filter(Boolean)
+      .join("\n");
 
     const result = await runAgentPipeline({
-      userMessage: authRoutePrefix + body.message.trim(),
+      userMessage:
+        (authRoutePrefix ? `${authRoutePrefix}\n` : "") + body.message.trim(),
       history,
       brandGuidelines,
       brandDna,
       partnerMemory,
       marketingProfile,
+      currentPost: authCurrentPost,
       referenceImages:
         referenceImages.length > 0 ? referenceImages : undefined,
       previousImagePrompt,
@@ -349,6 +454,13 @@ export async function POST(request: Request) {
           ),
           providerUsed: result.providerUsed,
           brand_dna: brandDna,
+          reply: output.chat_reply,
+          cardUpdate: {
+            title: output.social_post?.headline?.trim() || null,
+            bodyText: output.social_post?.body?.trim() || null,
+          },
+          updatedTitle: output.social_post?.headline?.trim() || undefined,
+          updatedBodyText: output.social_post?.body?.trim() || undefined,
           status: image
             ? "generated_visual"
             : result.visionNotes

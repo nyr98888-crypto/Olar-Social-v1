@@ -3,7 +3,9 @@
  */
 
 export const CLIENT_CHAT_TIMEOUT_MS = 45_000;
-export const CLIENT_IMAGE_TIMEOUT_MS = 40_000;
+/** Align with server Together(5s)+FAL(7s) budget — no 40s hang. */
+/** Must exceed FAL subscribe budget (~45s) so the client does not abort a live gen. */
+export const CLIENT_IMAGE_TIMEOUT_MS = 55_000;
 
 const RETRYABLE = new Set([502, 503, 504]);
 

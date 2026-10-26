@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "next lint",
     "test:engine": "tsx scripts/test-engine.ts",
-    "test:pipeline": "tsx scripts/test-pipeline.ts",
+    "test:pipeline": "node scripts/verify-pipeline.mjs",
+    "test:pipeline:agent": "tsx scripts/test-pipeline.ts",
+    "test:audit": "node scripts/audit-6-steps.mjs",
     "test:apis": "node scripts/verify-apis.mjs",
     "test:e2e": "npx playwright test",
     "test:report": "npx playwright test && npx playwright show-report test-report",
@@ -17,6 +19,7 @@
   "dependencies": {
     "@fal-ai/client": "^1.4.0",
     "@google/generative-ai": "^0.24.0",
+    "@libsql/client": "^0.18.0",
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.49.1",
     "html-to-image": "^1.11.13",

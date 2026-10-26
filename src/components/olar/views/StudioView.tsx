@@ -15,6 +15,7 @@ import {
   normalizeCategory,
 } from "@/lib/olar/business-categories";
 import { getCategoryFallback } from "@/lib/olar/category-fallbacks";
+import { CLIENT_IMAGE_TIMEOUT_MS } from "@/lib/api/fetch-with-retry";
 import { CampaignGenerator } from "@/components/olar/CampaignGenerator";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
 import { AssistedPublishModal } from "@/components/olar/AssistedPublishModal";
@@ -51,15 +52,45 @@ import {
   type VariationId,
 } from "@/lib/olar/ab-variations";
 import {
+  getStudioState,
+  hydrateStudioFromActivePost,
+  loadActivePost,
+  persistActivePost,
   postToCampaignVariation,
   selectVariationIndex,
   setStudioMeta,
+  setStudioVariations,
+  updateVariationCopy,
   updateVariationImage,
   useSelectedVariation,
   useStudioStore,
 } from "@/lib/store";
 import {
+  getCampaignState,
+  hydrateCampaignFromStorage,
+  persistSelectedCardToActiveCampaign,
+  schedulePost,
+  updateVariationText as updateCampaignVariationText,
+  useActiveCampaignVariation,
+  useCampaignStore,
+} from "@/lib/store/campaign-store";
+import {
+  fetchCampaignById,
+  fetchLatestCampaign,
+  postCampaignToDb,
+  readActiveCampaignId,
+} from "@/lib/olar/campaigns-client";
+import { downloadImageDirect } from "@/lib/utils/download-image";
+import { createCalendarEvent } from "@/lib/olar/calendar-client";
+import {
+  downloadIcsBlob,
+  buildIcsCalendar,
+  googleCalendarUrl,
+} from "@/lib/olar/calendar-events";
+import {
+  CalendarPlus,
   Copy,
+  Download,
   ImagePlus,
   PanelsTopLeft,
   Share2,
@@ -86,6 +117,8 @@ export function StudioView() {
   const { networks } = useConnections();
   const studio = useStudioStore();
   const selectedVariation = useSelectedVariation();
+  const campaignState = useCampaignStore();
+  const activeCampaignVar = useActiveCampaignVariation();
   const faceRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<StudioTab>("campaign");
   const [prompt, setPrompt] = useState("");
@@ -123,33 +156,252 @@ export function StudioView() {
     downloadOk?: boolean;
     imageOpenedInTab?: boolean;
   }>({});
-  const variations: CampaignVariation[] = studio.variations
-    ? studio.variations.map(postToCampaignVariation)
-    : [];
+  /** Mobile (< lg): toggle between post preview and Maya chat/tabs. */
+  const [mobilePane, setMobilePane] = useState<"preview" | "chat">("preview");
+  const variations: CampaignVariation[] = (
+    studio.variations
+      ? studio.variations.map(postToCampaignVariation)
+      : campaignState.activeCampaign?.variations
+        ? [...campaignState.activeCampaign.variations]
+        : []
+  ).filter((v) => {
+    const h = (v.headline || "").trim();
+    if (/^missing\s*card/i.test(h)) return false;
+    return Boolean(h || v.bodyText?.trim());
+  });
   const selectedVarId: VariationId =
     studio.selectedVariationIndex === 1 ? "var_2" : "var_1";
   const { message: aiProgress } = useAiProgressMessages(
     generating || imageLoading || studio.isLoading
   );
 
-  // Hydrate from persisted current_business_post (never lose FAL URL on remount)
+  // Hydrate left card: SQLite (?id / latest) source of truth, then localStorage cache
   useEffect(() => {
+    const isBadHeadline = (h?: string | null) => {
+      const t = (h || "").trim();
+      return !t || /^missing\s*card/i.test(t);
+    };
+
+    hydrateCampaignFromStorage();
+    const camp = getCampaignState();
+    const campVars = camp.activeCampaign?.variations;
+    const campGood =
+      Boolean(campVars?.[0]) &&
+      (!isBadHeadline(campVars![0].headline) ||
+        Boolean(campVars![0].bodyText?.trim()));
+
+    if (campGood && campVars) {
+      // Prefer home→studio handoff over stale current_active_post
+      setStudioVariations(campVars);
+      selectVariationIndex(camp.activeVariationIndex === 1 ? 1 : 0);
+    } else {
+      hydrateStudioFromActivePost();
+      const stored = loadCurrentPost();
+      if (
+        stored &&
+        (stored.headline?.trim() || stored.body?.trim()) &&
+        !isBadHeadline(stored.headline)
+      ) {
+        persistSelectedCardToActiveCampaign({
+          headline: stored.headline || "",
+          bodyText: stored.body || "",
+          body: stored.body || "",
+          ctaButton: stored.cta || "",
+          imageUrl: stored.image_url,
+          imagePrompt: stored.image_prompt || "",
+          hashtags: stored.hashtags || [],
+        });
+        const again = getCampaignState().activeCampaign?.variations;
+        if (again) {
+          setStudioVariations(again);
+          selectVariationIndex(0);
+        }
+      }
+    }
+
+    const active = loadActivePost();
+    const liveCamp = getCampaignState();
+    const fromCampaign =
+      liveCamp.activeCampaign?.variations?.[
+        liveCamp.activeVariationIndex === 1 ? 1 : 0
+      ] || null;
+    const liveStudio = getStudioState();
+    const fromStore =
+      liveStudio.variations?.[liveStudio.selectedVariationIndex];
+    const fromActive = active?.variations?.[active.selectedVariationIndex ?? 0];
     const stored = loadCurrentPost();
-    if (stored?.image_url) setImageUrl(stored.image_url);
+
+    let headline =
+      (!isBadHeadline(fromCampaign?.headline) && fromCampaign?.headline) ||
+      (!isBadHeadline(fromStore?.headline) && fromStore?.headline) ||
+      (!isBadHeadline(fromActive?.headline) && fromActive?.headline) ||
+      (!isBadHeadline(stored?.headline) && stored?.headline) ||
+      "";
+    if (isBadHeadline(headline)) headline = "";
+    const body =
+      fromCampaign?.bodyText ||
+      fromStore?.bodyText ||
+      fromActive?.bodyText ||
+      stored?.body ||
+      "";
+    const cta =
+      fromCampaign?.ctaButton ||
+      fromStore?.ctaButton ||
+      fromActive?.ctaButton ||
+      stored?.cta ||
+      "";
+    const img =
+      (fromCampaign?.imageUrl &&
+      !fromCampaign.imageUrl.startsWith("data:image/svg")
+        ? fromCampaign.imageUrl
+        : null) ||
+      (fromStore?.imageUrl && !fromStore.imageUrl.startsWith("data:image/svg")
+        ? fromStore.imageUrl
+        : null) ||
+      (fromActive?.imageUrl &&
+      typeof fromActive.imageUrl === "string" &&
+      !fromActive.imageUrl.startsWith("data:image/svg")
+        ? fromActive.imageUrl
+        : null) ||
+      stored?.image_url ||
+      null;
+
+    if (img) {
+      setImageUrl(img);
+      setResult(img);
+      setImageIsFallback(false);
+    }
     if (stored?.network) {
       setPreviewChannel(networkToPreviewChannel(stored.network));
     }
-    if (stored && (stored.headline || stored.body)) {
+    if (headline.trim() || body.trim()) {
       const post: SocialPostFields = {
-        headline: stored.headline,
-        body: stored.body,
-        hashtags: stored.hashtags || [],
-        call_to_action: stored.cta,
+        headline: headline.trim() || bizName || page.businessName || C.myBiz,
+        body: body.trim(),
+        hashtags: stored?.hashtags || [],
+        call_to_action: cta,
       };
       setCampaignPreview(post);
       setPlatforms(resolvePlatforms(post, page));
     }
+
+    // SQLite source of truth — overwrite cache when DB row resolves
+    let cancelled = false;
+    async function hydrateFromDb() {
+      let idNum = NaN;
+      try {
+        const q = new URLSearchParams(window.location.search).get("id");
+        if (q) idNum = Number.parseInt(q, 10);
+      } catch {
+        /* ignore */
+      }
+      if (!Number.isFinite(idNum) || idNum <= 0) {
+        const remembered = readActiveCampaignId();
+        if (remembered) idNum = remembered;
+      }
+      const fromDb =
+        Number.isFinite(idNum) && idNum > 0
+          ? await fetchCampaignById(idNum)
+          : await fetchLatestCampaign();
+      if (cancelled || !fromDb) return;
+      const dbTitle = (fromDb.title || "").trim();
+      const dbBody = (fromDb.bodyText || "").trim();
+      if (!dbTitle && !dbBody) return;
+      if (/^missing\s*card/i.test(dbTitle)) return;
+      const safeHeadline = dbTitle || dbBody.slice(0, 48);
+      persistSelectedCardToActiveCampaign({
+        headline: safeHeadline,
+        bodyText: dbBody,
+        body: dbBody,
+        imageUrl: fromDb.imageUrl || null,
+        hashtags: fromDb.hashtags
+          ? fromDb.hashtags.split(/\s+/).filter(Boolean)
+          : [],
+      });
+      setStudioVariations([
+        {
+          id: "var_1",
+          label: "אופציה 1",
+          headline: safeHeadline,
+          bodyText: dbBody,
+          ctaButton: "",
+          imageUrl: fromDb.imageUrl || null,
+          imagePrompt: "",
+        },
+        {
+          id: "var_2",
+          label: "אופציה 2",
+          headline: safeHeadline,
+          bodyText: dbBody,
+          ctaButton: "",
+          imageUrl: fromDb.imageUrl || null,
+          imagePrompt: "",
+        },
+      ]);
+      selectVariationIndex(0);
+      if (fromDb.imageUrl) {
+        setImageUrl(fromDb.imageUrl);
+        setResult(fromDb.imageUrl);
+        setImageIsFallback(false);
+      }
+      const dbPost: SocialPostFields = {
+        headline: safeHeadline,
+        body: dbBody,
+        hashtags: fromDb.hashtags
+          ? fromDb.hashtags.split(/\s+/).filter(Boolean)
+          : [],
+        call_to_action: "",
+      };
+      setCampaignPreview(dbPost);
+      setPlatforms(resolvePlatforms(dbPost, page));
+    }
+    void hydrateFromDb();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount / page identity only
   }, [page]);
+
+  // Live sync: campaign-store text/image → left preview (Maya updates)
+  useEffect(() => {
+    if (!activeCampaignVar) return;
+    if (
+      !activeCampaignVar.headline?.trim() &&
+      !activeCampaignVar.bodyText?.trim()
+    ) {
+      return;
+    }
+    const next: SocialPostFields = {
+      headline: activeCampaignVar.headline,
+      body: activeCampaignVar.bodyText,
+      hashtags: loadCurrentPost()?.hashtags || [],
+      call_to_action: activeCampaignVar.ctaButton,
+    };
+    setCampaignPreview(next);
+    setPlatforms(resolvePlatforms(next, page));
+    if (
+      activeCampaignVar.imageUrl &&
+      !activeCampaignVar.imageUrl.startsWith("data:image/svg")
+    ) {
+      setImageUrl(activeCampaignVar.imageUrl);
+      setResult(activeCampaignVar.imageUrl);
+      setImageIsFallback(false);
+    }
+  }, [
+    activeCampaignVar?.headline,
+    activeCampaignVar?.bodyText,
+    activeCampaignVar?.ctaButton,
+    activeCampaignVar?.imageUrl,
+    page,
+  ]);
+
+  // While generating a new post: clear local preview image so old FAL URLs never flash
+  useEffect(() => {
+    if (!studio.isLoading) return;
+    setImageUrl(null);
+    setResult(null);
+    setImageIsFallback(false);
+  }, [studio.isLoading]);
 
   useEffect(() => {
     if (!bizName && page.businessName) setBizName(page.businessName);
@@ -272,6 +524,44 @@ export function StudioView() {
     if (v) applyVariationToPreview(v);
   }
 
+  function onInlineEditVariation(
+    index: number,
+    patch: { headline?: string; bodyText?: string }
+  ) {
+    const i = index === 1 ? 1 : 0;
+    const v = variations[i];
+    if (!v) return;
+    updateVariationCopy(i, patch);
+    const nextHeadline = patch.headline ?? v.headline;
+    const nextBody = patch.bodyText ?? v.bodyText;
+    // Central campaign store + localStorage (one_loop_active_campaign)
+    updateCampaignVariationText(i, nextHeadline, nextBody);
+    selectVariationIndex(i);
+    const next: SocialPostFields = {
+      headline: nextHeadline,
+      body: nextBody,
+      hashtags: v.hashtags || loadCurrentPost()?.hashtags || [],
+      call_to_action: v.ctaButton,
+    };
+    setCampaignPreview(next);
+    setPlatforms(resolvePlatforms(next, page));
+    if (v.imageUrl && !v.imageUrl.startsWith("data:image/svg")) {
+      setImageUrl(v.imageUrl);
+      setResult(v.imageUrl);
+    }
+    const saved = saveCurrentPost({
+      headline: nextHeadline,
+      body: nextBody,
+      cta: v.ctaButton,
+      hashtags: next.hashtags,
+      offer: lastUserText || loadCurrentPost()?.offer || "",
+      image_url: v.imageUrl || loadCurrentPost()?.image_url || null,
+      image_prompt: v.imagePrompt || null,
+      network: previewChannelToNetwork(previewChannel),
+    });
+    void syncCurrentPostToServer(saved);
+  }
+
   async function handleRegenerateImage(opts?: {
     descriptionOverride?: string;
     /** Regenerate ONLY this A/B card (0 or 1). Defaults to selected. */
@@ -305,13 +595,14 @@ export function StudioView() {
       `${page.businessName} ${page.tagline}`.trim() ||
       "local business"
     ).trim();
-    const { withRegenAngleHint, bustImageUrl } = await import(
+    const { randomImageSeed, withRegenAngleHint, bustImageUrl } = await import(
       "@/lib/olar/image-cache-bust"
     );
-    const newSeed = Math.floor(Math.random() * 10000000);
+    const newSeed = randomImageSeed();
     const updatedPrompt = withRegenAngleHint(description);
     const previousPrompt =
       activeVar?.imagePrompt || stored?.image_prompt || null;
+    const anchorsPayload = studio.imageAnchorWords?.trim() || undefined;
 
     // Keep previous image visible under skeleton — avoid "empty / broken" flash
     setImageLoading(true);
@@ -340,8 +631,9 @@ export function StudioView() {
           bustCache: Date.now(),
           regenerate: true,
           previousPrompt,
+          imageAnchorWords: anchorsPayload,
         }),
-        signal: AbortSignal.timeout(45_000),
+        signal: AbortSignal.timeout(CLIENT_IMAGE_TIMEOUT_MS),
       });
       const data = (await res.json().catch(() => ({}))) as {
         soft_message?: string;
@@ -429,12 +721,19 @@ export function StudioView() {
   }
 
   function onVariationsReady(
-    _nextVars: CampaignVariation[],
+    nextVars: CampaignVariation[],
     userText: string
   ) {
     // Variations already written to central store by CampaignGenerator
     setLastUserText(userText);
     setPrompt(userText);
+    persistActivePost();
+    const firstImg = nextVars[0]?.imageUrl;
+    if (firstImg && !firstImg.startsWith("data:image/svg")) {
+      setImageUrl(firstImg);
+      setResult(firstImg);
+      setImageIsFallback(false);
+    }
   }
 
   function onPostReady(draft: {
@@ -551,20 +850,65 @@ export function StudioView() {
         ? Boolean(bizName.trim())
         : true);
 
-  // Never show Missing Card when store variations exist
+  // Never show Missing Card — prefer live variation / campaign / last saved
   const hasLivePost = Boolean(
     (studio.variations &&
       studio.variations[0]?.headline?.trim() &&
       studio.variations[0]?.bodyText?.trim()) ||
+      (activeCampaignVar?.headline?.trim() &&
+        activeCampaignVar?.bodyText?.trim()) ||
       (campaignPreview?.headline?.trim() && campaignPreview?.body?.trim())
   );
   const fallbackPost: SocialPostFields = {
-    headline: bizName || page.businessName || C.myBiz,
-    body: prompt || page.tagline || page.description,
-    hashtags: page.firstPost?.hashtags || [],
-    call_to_action: page.firstPost?.cta,
+    headline:
+      activeCampaignVar?.headline?.trim() ||
+      loadCurrentPost()?.headline ||
+      bizName ||
+      page.businessName ||
+      C.myBiz,
+    body:
+      activeCampaignVar?.bodyText?.trim() ||
+      loadCurrentPost()?.body ||
+      prompt ||
+      page.tagline ||
+      page.description ||
+      "",
+    hashtags: page.firstPost?.hashtags || loadCurrentPost()?.hashtags || [],
+    call_to_action:
+      activeCampaignVar?.ctaButton ||
+      loadCurrentPost()?.cta ||
+      page.firstPost?.cta,
   };
-  const activePost = campaignPreview || fallbackPost;
+  // Ban empty / "Missing Card" shells — always show real copy when available
+  const activePost: SocialPostFields = (() => {
+    const raw = campaignPreview || fallbackPost;
+    const headline = (raw.headline || "").trim();
+    const body = (raw.body || "").trim();
+    if (
+      !headline ||
+      /^missing\s*card/i.test(headline) ||
+      headline === "Missing Card 0"
+    ) {
+      return {
+        ...raw,
+        headline:
+          selectedVariation?.headline?.trim() ||
+          activeCampaignVar?.headline?.trim() ||
+          loadCurrentPost()?.headline?.trim() ||
+          bizName ||
+          page.businessName ||
+          C.myBiz,
+        body:
+          body ||
+          selectedVariation?.bodyText?.trim() ||
+          activeCampaignVar?.bodyText?.trim() ||
+          loadCurrentPost()?.body?.trim() ||
+          page.tagline ||
+          "",
+      };
+    }
+    return raw;
+  })();
   const activePlatforms =
     platforms || resolvePlatforms(activePost, page);
   const previewPost = platformToCardData(
@@ -613,13 +957,122 @@ export function StudioView() {
 
   function shareChannel() {
     if (previewChannel === "whatsapp") {
+      const postText = formatChannelShareText(
+        activePost,
+        activePlatforms,
+        "whatsapp",
+        page
+      );
       window.open(
-        whatsappCardShareHref(activePost, activePlatforms, page),
+        `https://api.whatsapp.com/send?text=${encodeURIComponent(postText)}`,
         "_blank"
       );
       return;
     }
     void copyChannelText();
+  }
+
+  async function downloadActiveImage() {
+    const url =
+      previewImage ||
+      selectedVariation?.imageUrl ||
+      studio.variations?.[studio.selectedVariationIndex]?.imageUrl ||
+      null;
+    if (!url || url.startsWith("data:image/svg")) {
+      setSoftToast("אין תמונה להורדה עדיין — המתינו לסיום היצירה.");
+      return;
+    }
+    const result = await downloadImageDirect(
+      url,
+      `oneloop-post-${Date.now()}.png`
+    );
+    setSoftToast(
+      result.ok
+        ? "התמונה הורדה ✓"
+        : result.openedInTab
+          ? "נפתח חלון חדש — שמרו את התמונה ידנית (Ctrl+S)"
+          : "ההורדה נכשלה — נסו שוב"
+    );
+    window.setTimeout(() => setSoftToast(null), 2800);
+  }
+
+  async function schedulePostToCalendar() {
+    const headline =
+      selectedVariation?.headline?.trim() ||
+      activePost.headline?.trim() ||
+      "פוסט חדש";
+    const body =
+      selectedVariation?.bodyText?.trim() || activePost.body?.trim() || "";
+    const cta =
+      selectedVariation?.ctaButton?.trim() ||
+      activePost.call_to_action?.trim() ||
+      "";
+    const imageUrl =
+      previewImage ||
+      selectedVariation?.imageUrl ||
+      studio.variations?.[studio.selectedVariationIndex]?.imageUrl ||
+      null;
+
+    const start = new Date();
+    start.setMinutes(0, 0, 0);
+    start.setHours(start.getHours() + 2);
+
+    // Also persist to SQLite campaigns (שמור ותזמן ליומן)
+    void postCampaignToDb({
+      title: headline,
+      bodyText: body,
+      imageUrl:
+        imageUrl && !imageUrl.startsWith("data:image/svg") ? imageUrl : "",
+      hashtags: activePost.hashtags || [],
+      platform: "Instagram",
+    });
+
+    // Primary: persist under localStorage `one_loop_scheduled_posts`
+    const local = schedulePost({
+      headline,
+      bodyText: body,
+      ctaButton: cta,
+      imageUrl: imageUrl && !imageUrl.startsWith("data:image/svg") ? imageUrl : null,
+      scheduledAt: start,
+    });
+
+    // Best-effort: also sync to server calendar + ICS / Google
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
+    const ev = await createCalendarEvent({
+      title: `פוסט: ${headline.slice(0, 80)}`,
+      description: [body, imageUrl ? `תמונה: ${imageUrl}` : ""]
+        .filter(Boolean)
+        .join("\n\n"),
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+      event_type: "post",
+      status: "scheduled",
+      reminder_minutes: 30,
+      service_type: "פוסט מתוזמן",
+    });
+    if (ev) {
+      try {
+        downloadIcsBlob(buildIcsCalendar([ev]), `oneloop-post-${ev.id}.ics`);
+      } catch {
+        /* soft */
+      }
+      try {
+        window.open(googleCalendarUrl(ev), "_blank", "noopener,noreferrer");
+      } catch {
+        /* soft */
+      }
+    }
+
+    const whenLabel = new Date(local.scheduledAt).toLocaleString("he-IL", {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
+    setSoftToast(
+      ev
+        ? `תוזמן ליומן ✓ · ${whenLabel}`
+        : `נשמר ביומן המקומי ✓ · ${whenLabel}`
+    );
+    window.setTimeout(() => setSoftToast(null), 3200);
   }
 
   const fbAccount = getSocialAccount(networks, "facebook");
@@ -740,20 +1193,36 @@ export function StudioView() {
   );
 
   const shareActions = (
-    <div className="flex flex-col gap-2 sm:flex-row">
+    <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap">
       <button
         type="button"
         onClick={() => void copyChannelText()}
-        className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-base font-medium text-slate-900 hover:bg-slate-50"
+        className="flex min-h-12 w-full flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-base font-medium text-slate-900 hover:bg-slate-50 sm:w-auto"
       >
         <Copy className="h-4 w-4 text-slate-600" />
         {copyToast || C.copyPlatformText}
+      </button>
+      <button
+        type="button"
+        onClick={() => void downloadActiveImage()}
+        className="flex min-h-12 w-full flex-1 items-center justify-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 text-base font-medium text-sky-900 hover:bg-sky-100 sm:w-auto"
+      >
+        <Download className="h-4 w-4" />
+        הורד תמונה (PNG)
+      </button>
+      <button
+        type="button"
+        onClick={() => void schedulePostToCalendar()}
+        className="flex min-h-12 w-full flex-1 items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 text-base font-medium text-violet-900 hover:bg-violet-100 sm:w-auto"
+      >
+        <CalendarPlus className="h-4 w-4" />
+        שמור ותזמן ליומן
       </button>
       {previewChannel === "whatsapp" ? (
         <button
           type="button"
           onClick={shareChannel}
-          className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-[#25D366] text-base font-medium text-white hover:brightness-110"
+          className="flex min-h-12 w-full flex-1 items-center justify-center gap-2 rounded-xl bg-[#25D366] px-3 text-base font-medium text-white hover:brightness-110 sm:w-auto"
         >
           <Share2 className="h-4 w-4" />
           {C.sendWaCard || C.waSendCard}
@@ -762,7 +1231,8 @@ export function StudioView() {
     </div>
   );
 
-  const showAbGrid = variations.length >= 2;
+  // Single-card flow — never show dual A/B Option 1 / Option 2 grid
+  const showAbGrid = false;
 
   const previewCard = (
     <div className="flex w-full flex-col gap-3">
@@ -795,7 +1265,7 @@ export function StudioView() {
               );
             })}
           </div>
-          <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+          <div className="grid grid-cols-1 items-stretch gap-6 lg:grid-cols-2">
             {variations.slice(0, 2).map((v, i) => {
               const isSelected = selectedVarId === v.id;
               const cardPost: SocialPostFields = {
@@ -819,48 +1289,67 @@ export function StudioView() {
               return (
                 <div
                   key={v.id}
-                  className={`flex flex-col gap-3 rounded-2xl p-1 transition ${
+                  className={`flex h-full flex-col gap-3 rounded-2xl p-1 transition ${
                     isSelected
                       ? "ring-2 ring-offset-2 " +
                         (i === 0 ? "ring-cyan-500" : "ring-purple-500")
                       : ""
                   }`}
                 >
-                  <div className="flex w-full flex-col gap-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => selectVariation(v.id)}
-                      className={`inline-flex w-fit rounded-lg px-3 py-1 text-xs font-bold text-white ${
-                        i === 0 ? "bg-cyan-600" : "bg-purple-600"
-                      }`}
-                    >
-                      {i === 0 ? C.option1Badge : C.option2Badge}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => selectVariation(v.id)}
-                      className="w-full text-right"
-                    >
-                      <PostCardPreview
-                        className="max-w-none pointer-events-none"
-                        network={previewChannelToNetwork(previewChannel)}
-                        businessName={bizName || page.businessName || C.myBiz}
-                        logoUrl={page.logoUrl || page.avatarUrl}
-                        post={cardPreview}
-                        imageUrl={cardImage}
-                        imageLoading={imageLoadingIndex === i}
-                        isFallback={isSelected ? imageIsFallback : false}
-                        waHref={
-                          previewChannel === "whatsapp"
-                            ? whatsappCardShareHref(
-                                cardPost,
-                                cardPlatforms,
-                                page
-                              )
-                            : null
+                  <button
+                    type="button"
+                    onClick={() => selectVariation(v.id)}
+                    className={`inline-flex w-fit shrink-0 rounded-lg px-3 py-1 text-xs font-bold text-white ${
+                      i === 0 ? "bg-cyan-600" : "bg-purple-600"
+                    }`}
+                  >
+                    {i === 0 ? C.option1Badge : C.option2Badge}
+                  </button>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => selectVariation(v.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        selectVariation(v.id);
+                      }
+                    }}
+                    className="min-h-0 w-full flex-1 text-right"
+                  >
+                    <PostCardPreview
+                      className="h-full max-w-none"
+                      squareImage
+                      network={previewChannelToNetwork(previewChannel)}
+                      businessName={bizName || page.businessName || C.myBiz}
+                      logoUrl={page.logoUrl || page.avatarUrl}
+                      post={cardPreview}
+                      imageUrl={cardImage}
+                        imageLoading={
+                          imageLoadingIndex === i ||
+                          ((studio.isLoading || studio.imagesPending) &&
+                            !cardImage)
                         }
-                      />
-                    </button>
+                      isFallback={isSelected ? imageIsFallback : false}
+                      editable={previewChannel !== "whatsapp"}
+                      onHeadlineChange={(headline) =>
+                        onInlineEditVariation(i, { headline })
+                      }
+                      onBodyChange={(bodyText) =>
+                        onInlineEditVariation(i, { bodyText })
+                      }
+                      waHref={
+                        previewChannel === "whatsapp"
+                          ? whatsappCardShareHref(
+                              cardPost,
+                              cardPlatforms,
+                              page
+                            )
+                          : null
+                      }
+                    />
+                  </div>
+                  <div className="mt-auto flex shrink-0 flex-col gap-2">
                     {previewChannel !== "whatsapp" ? (
                       <PublishPlatformButtons
                         facebookMode={fbAccount.mode}
@@ -868,9 +1357,17 @@ export function StudioView() {
                         busy={publishBusy}
                         onPublish={(p) => {
                           selectVariation(v.id);
+                          const live = variations[i] || v;
+                          const livePost: SocialPostFields = {
+                            headline: live.headline,
+                            body: live.bodyText,
+                            hashtags: live.hashtags || [],
+                            call_to_action: live.ctaButton,
+                          };
+                          const caps = resolvePlatforms(livePost, page);
                           const cap = formatChannelShareText(
-                            cardPost,
-                            cardPlatforms,
+                            livePost,
+                            caps,
                             p,
                             page
                           );
@@ -881,23 +1378,23 @@ export function StudioView() {
                         }}
                       />
                     ) : null}
+                    <button
+                      type="button"
+                      disabled={imageLoading}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        selectVariation(v.id);
+                        void handleRegenerateImage({
+                          variationIndex: i,
+                          descriptionOverride: v.imagePrompt || undefined,
+                        });
+                      }}
+                      className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {C.swapThisImage}
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    disabled={imageLoading}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      selectVariation(v.id);
-                      void handleRegenerateImage({
-                        variationIndex: i,
-                        descriptionOverride: v.imagePrompt || undefined,
-                      });
-                    }}
-                    className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 hover:bg-slate-50 disabled:opacity-50"
-                  >
-                    {C.swapThisImage}
-                  </button>
                 </div>
               );
             })}
@@ -907,13 +1404,61 @@ export function StudioView() {
       ) : hasLivePost || previewPost.headline?.trim() ? (
         <>
           <PostCardPreview
+            className="w-full max-w-full"
+            squareImage
             network={previewChannelToNetwork(previewChannel)}
             businessName={bizName || page.businessName || C.myBiz}
             logoUrl={page.logoUrl || page.avatarUrl}
             post={previewPost}
             imageUrl={previewImage}
-            imageLoading={imageLoading}
+            imageLoading={
+              imageLoading ||
+              ((studio.isLoading || studio.imagesPending) && !previewImage)
+            }
             isFallback={imageIsFallback}
+            editable={previewChannel !== "whatsapp"}
+            onHeadlineChange={(headline) => {
+              if (variations.length >= 1) {
+                onInlineEditVariation(
+                  selectedVarId === "var_2" ? 1 : 0,
+                  { headline }
+                );
+              } else {
+                setCampaignPreview((prev) =>
+                  prev ? { ...prev, headline } : prev
+                );
+                const saved = saveCurrentPost({
+                  headline,
+                  body: activePost.body,
+                  cta: activePost.call_to_action || "",
+                  hashtags: activePost.hashtags,
+                  image_url: previewImage,
+                  network: previewChannelToNetwork(previewChannel),
+                });
+                void syncCurrentPostToServer(saved);
+              }
+            }}
+            onBodyChange={(body) => {
+              if (variations.length >= 1) {
+                onInlineEditVariation(
+                  selectedVarId === "var_2" ? 1 : 0,
+                  { bodyText: body }
+                );
+              } else {
+                setCampaignPreview((prev) =>
+                  prev ? { ...prev, body } : prev
+                );
+                const saved = saveCurrentPost({
+                  headline: activePost.headline,
+                  body,
+                  cta: activePost.call_to_action || "",
+                  hashtags: activePost.hashtags,
+                  image_url: previewImage,
+                  network: previewChannelToNetwork(previewChannel),
+                });
+                void syncCurrentPostToServer(saved);
+              }
+            }}
             onRetryImage={() => void handleRegenerateImage()}
             waHref={
               previewChannel === "whatsapp"
@@ -941,21 +1486,59 @@ export function StudioView() {
 
   return (
     <div
-      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
+      className="flex h-full min-h-0 w-full flex-col overflow-x-hidden overflow-hidden"
       dir="rtl"
     >
-      <div className="flex h-full min-h-0 w-full flex-col gap-6 overflow-hidden lg:flex-row">
-        <section
-          className={`flex min-h-0 min-w-0 flex-col overflow-hidden ${
-            showAbGrid ? "lg:flex-[0.9]" : "lg:flex-[1.2]"
+      {/* Mobile pane switch — preview first by default */}
+      <div className="mb-3 flex w-full shrink-0 gap-2 rounded-2xl bg-accent-soft/50 p-1 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setMobilePane("preview")}
+          className={`flex min-h-12 flex-1 items-center justify-center rounded-xl text-base font-bold transition ${
+            mobilePane === "preview"
+              ? "border border-accent bg-white text-slate-900 shadow-md"
+              : "text-slate-700 hover:bg-white/70"
           }`}
+        >
+          תצוגה
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobilePane("chat")}
+          className={`flex min-h-12 flex-1 items-center justify-center rounded-xl text-base font-bold transition ${
+            mobilePane === "chat"
+              ? "border border-accent bg-white text-slate-900 shadow-md"
+              : "text-slate-700 hover:bg-white/70"
+          }`}
+        >
+          צ&apos;אט
+        </button>
+      </div>
+
+      <div className="flex h-full min-h-0 w-full flex-col gap-6 overflow-x-hidden overflow-hidden lg:grid lg:grid-cols-2">
+        {/* Preview — top on mobile toggle; right column on lg+ */}
+        <aside
+          className={`min-h-0 min-w-0 flex-col overflow-hidden ${
+            mobilePane === "preview" ? "flex" : "hidden"
+          } lg:order-2 lg:flex`}
+        >
+          <div className="flex h-full max-h-full flex-col overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 lg:max-h-[calc(100vh-120px)]">
+            {previewCard}
+          </div>
+        </aside>
+
+        {/* Maya chat / tabs */}
+        <section
+          className={`min-h-0 min-w-0 flex-col overflow-hidden ${
+            mobilePane === "chat" ? "flex" : "hidden"
+          } lg:order-1 lg:flex`}
         >
           <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-28 lg:pb-8 animate-rise">
             <header className="text-right">
-              <h1 className="text-right text-xl font-bold text-slate-800">
+              <h1 className="text-right text-xl font-bold text-slate-800 sm:text-2xl lg:text-3xl">
                 {C.yonaTitle}
               </h1>
-              <p className="mt-1 break-words text-lg text-slate-800">
+              <p className="mt-1 break-words text-base text-slate-800 sm:text-lg">
                 {C.studioTitle}
               </p>
             </header>
@@ -988,11 +1571,7 @@ export function StudioView() {
             studio.messages.length <= 1 ? (
               <WingmanGreetingCard
                 replyMessage={wingman.replyMessage}
-                chips={wingman.chips}
-                onChipClick={(chip) => {
-                  wingman.onChipClick(chip);
-                  setTab("campaign");
-                }}
+                chips={[]}
               />
             ) : null}
 
@@ -1176,21 +1755,9 @@ export function StudioView() {
               </div>
             )}
 
-            <div className="pt-2 lg:hidden">{previewCard}</div>
             <FooterBrand />
           </div>
         </section>
-
-        {/* Sticky Live Preview — dual A/B cards side-by-side when variations exist */}
-        <aside
-          className={`hidden min-h-0 lg:flex lg:flex-col ${
-            showAbGrid ? "lg:flex-[1.4] lg:min-w-[36rem]" : "lg:flex-[0.8]"
-          }`}
-        >
-          <div className="flex h-full flex-col lg:max-h-[calc(100vh-120px)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4">
-            {previewCard}
-          </div>
-        </aside>
       </div>
 
       <AssistedPublishModal

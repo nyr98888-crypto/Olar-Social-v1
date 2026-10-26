@@ -842,11 +842,11 @@ export function YonaWorkspace({
       />
 
       {/* Desktop: RTL split. Mobile: one full panel via bottom tabs. */}
-      <div className="relative grid min-h-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-2">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-hidden lg:grid lg:grid-cols-2">
         <div
           className={`min-h-0 min-w-0 ${
             mobileTab === "chat" ? "flex h-full flex-col" : "hidden"
-          } md:flex md:h-full md:flex-col`}
+          } lg:flex lg:h-full lg:flex-col`}
         >
           <ChatPanel
             messages={messages}
@@ -869,7 +869,7 @@ export function YonaWorkspace({
         <div
           className={`min-h-0 min-w-0 ${
             mobileTab === "preview" ? "flex h-full flex-col" : "hidden"
-          } md:flex md:h-full md:flex-col`}
+          } lg:flex lg:h-full lg:flex-col`}
         >
           <SocialPreview
             post={activePost}
@@ -889,7 +889,7 @@ export function YonaWorkspace({
       </div>
 
       <nav
-        className="safe-bottom flex shrink-0 border-t border-line bg-panel/95 backdrop-blur-sm md:hidden"
+        className="safe-bottom flex shrink-0 border-t border-line bg-panel/95 backdrop-blur-sm lg:hidden"
         aria-label="ניווט מובייל"
       >
         <button

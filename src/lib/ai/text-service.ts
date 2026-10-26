@@ -1,7 +1,7 @@
 /**
- * Text / structured JSON service — OpenRouter-first hybrid fallback
+ * Text / structured JSON service — OpenRouter exclusive
  * wrapped with Production Guardrails:
- *   AI (≤4s) → validateAndSanitizePost → golden template if invalid/timeout/fail
+ *   AI (≤10s) → validateAndSanitizePost → golden template if invalid/timeout/fail
  *
  * User-facing output is ALWAYS clean & validated (soft success).
  * Technical failures stay in server console.error only.
@@ -19,11 +19,12 @@ import {
 import { withTimeout } from "./with-timeout";
 import type { ChatTurn } from "./types";
 import type { AgentOutput } from "../../../schemas/agent";
+import { AI_CONFIG } from "@/lib/ai-config";
 
 export { OPENROUTER_MODELS };
 
 /** Default hard cap for chat/structured — callers may pass a longer budget. */
-export const TEXT_PIPELINE_TIMEOUT_MS = 4_000;
+export const TEXT_PIPELINE_TIMEOUT_MS = AI_CONFIG.STRUCTURED_TEXT_TIMEOUT_MS;
 /** Onboarding / generate-post needs enough time for OpenRouter Haiku. */
 export const GENERATE_POST_TIMEOUT_MS = 28_000;
 
@@ -74,8 +75,8 @@ export function enforcePostPipeline(
 }
 
 /**
- * Full chain via router (OpenRouter hybrid → Grok? → Groq → Gemini),
- * with 4s timeout + validateAndSanitizePost + golden fallback.
+ * OpenRouter-only structured generation via router,
+ * with 10s timeout + validateAndSanitizePost + golden fallback.
  * Never throws for provider failure — returns golden template instead.
  */
 export async function generateStructuredText(

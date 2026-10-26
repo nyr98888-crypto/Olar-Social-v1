@@ -12,30 +12,48 @@ import {
   sanitizeMarketingCopy,
   sanitizeVariationCopy,
 } from "@/lib/olar/sanitize-marketing-copy";
-import type { BusinessCategoryId } from "@/lib/olar/business-categories";
+import {
+  legacyNicheFromCategory,
+  type BusinessCategoryId,
+} from "@/lib/olar/business-categories";
 import {
   VAR_1_LABEL,
   VAR_2_LABEL,
-  normalizeVariationId,
   type CampaignVariation,
   type VariationId,
 } from "@/lib/olar/ab-variations";
 import {
   appendStudioMessage,
+  clearStudioVariationImages,
+  persistActivePost,
+  setStudioImagesPending,
   setStudioLoading,
   setStudioMeta,
   setStudioPostType,
   setStudioVariations,
+  updateVariationCopy,
+  updateVariationImage,
   useStudioStore,
+  type StudioApplyPatch,
 } from "@/lib/store";
-import { ContentPillarTabs } from "@/components/olar/ContentPillarTabs";
+import {
+  getCampaignState,
+  persistSelectedCardToActiveCampaign,
+  setCampaign,
+  updateVariationImage as updateCampaignImage,
+  updateVariationText as updateCampaignText,
+} from "@/lib/store/campaign-store";
+import {
+  patchCampaignInDb,
+  readActiveCampaignId,
+} from "@/lib/olar/campaigns-client";
 import {
   postTypeDefaultCtas,
   postTypePlaceholder,
-  type PostTypeId,
 } from "@/lib/olar/post-types";
 import { consumeWingmanChipPrefill } from "@/hooks/useWingmanGreeting";
 import { isBlockedStudioChatReply } from "@/lib/ai/golden-templates";
+import { CLIENT_IMAGE_TIMEOUT_MS } from "@/lib/api/fetch-with-retry";
 
 const NET_TAGS: {
   id: SocialNetwork;
@@ -47,11 +65,6 @@ const NET_TAGS: {
   { id: "facebook", label: "Facebook", glyph: "facebook" },
   { id: "google", label: "Google Business", glyph: "google" },
 ];
-
-const QUICK_SENDS = [
-  { id: "offer", label: "עדכון מבצע", text: "תכיני פוסט עם עדכון מבצע אטרקטיבי לעסק שלי" },
-  { id: "tip", label: "טיפ מקצועי", text: "תכיני פוסט עם טיפ מקצועי שימושי ללקוחות שלי" },
-] as const;
 
 export type StudioPostData = {
   headline: string;
@@ -96,18 +109,25 @@ export function CampaignGenerator({
     previewNetwork || "instagram"
   );
   const sendingRef = useRef(false);
-  const busy = studio.isLoading;
-  const { message: aiProgress } = useAiProgressMessages(busy);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const [textBusy, setTextBusy] = useState(false);
+  const busy = textBusy || studio.isLoading;
+  const { message: aiProgress } = useAiProgressMessages(
+    busy || studio.imagesPending
+  );
 
   const network = previewNetwork ?? localNet;
   const chat = studio.messages;
   const postType = studio.postType;
   const pillarPlaceholder = postTypePlaceholder(postType);
-  const defaultCtas = postTypeDefaultCtas(postType);
 
-  function onPostTypeChange(id: PostTypeId) {
-    setStudioPostType(id);
-  }
+  // Auto-scroll chat to bottom when Maya replies
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [chat.length, textBusy]);
+  const defaultCtas = postTypeDefaultCtas(postType);
 
   useEffect(() => {
     if (previewNetwork) setLocalNet(previewNetwork);
@@ -162,6 +182,90 @@ export function CampaignGenerator({
     });
   }
 
+  function applyPatchToPreview(patch: StudioApplyPatch) {
+    updateVariationCopy(0, {
+      headline: patch.headline,
+      bodyText: patch.bodyText,
+      ctaButton: patch.ctaButton,
+    });
+    updateCampaignText(0, patch.headline, patch.bodyText);
+    const v0 = {
+      ...studio.variations?.[0],
+      headline: patch.headline,
+      bodyText: patch.bodyText,
+      ctaButton: patch.ctaButton || studio.variations?.[0]?.ctaButton || "",
+    };
+    applyVariation(
+      {
+        id: "var_1",
+        label: VAR_1_LABEL,
+        headline: patch.headline,
+        bodyText: patch.bodyText,
+        ctaButton: patch.ctaButton || defaultCtas.var1,
+        imagePrompt: v0.imagePrompt || "",
+        imageUrl: (v0.imageUrl as string) || null,
+      },
+      studio.messages.filter((m) => m.role === "user").at(-1)?.content || ""
+    );
+    persistActivePost();
+    setToast("הכרטיס עודכן מהצ'אט ✓");
+  }
+
+  /** Background single image fill — never blocks Maya chat bubble. */
+  async function fillImagesInBackground(
+    vars: CampaignVariation[],
+    userMessage: string,
+    anchors?: string
+  ) {
+    setStudioImagesPending(true);
+    try {
+      const v = vars[0]!;
+      const seed = Math.floor(Math.random() * 10000000);
+      try {
+        const res = await fetch("/api/generate-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            description: v.imagePrompt || userMessage,
+            prompt: v.imagePrompt || userMessage,
+            businessName: businessName || undefined,
+            niche: category ? legacyNicheFromCategory(category) : undefined,
+            category: category ?? undefined,
+            purpose: "post",
+            aspectRatio: "1:1",
+            seed,
+            bustCache: Date.now(),
+            imageAnchorWords: anchors || undefined,
+          }),
+          signal: AbortSignal.timeout(CLIENT_IMAGE_TIMEOUT_MS),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          image?: { url?: string; prompt?: string };
+          imageUrl?: string;
+          english_prompt?: string;
+        };
+        const url = data.image?.url || data.imageUrl;
+        if (url && !url.startsWith("data:image")) {
+          const prompt =
+            data.english_prompt || data.image?.prompt || v.imagePrompt;
+          updateVariationImage(0, { imageUrl: url, imagePrompt: prompt });
+          updateCampaignImage(0, url);
+          // Keep store length-2 in sync
+          updateVariationImage(1, { imageUrl: url, imagePrompt: prompt });
+          updateCampaignImage(1, url);
+        }
+      } catch (err) {
+        console.warn(
+          "[CampaignGenerator] background image failed",
+          err instanceof Error ? err.message : err
+        );
+      }
+      persistActivePost();
+    } finally {
+      setStudioImagesPending(false);
+    }
+  }
+
   async function handleSendMessage(overrideText?: string) {
     const userMessage = sanitizeMarketingCopy(
       (overrideText ?? inputPrompt).trim()
@@ -174,13 +278,55 @@ export function CampaignGenerator({
     }
 
     sendingRef.current = true;
-    // Clear textarea immediately; append user bubble; set loading
     setInputPrompt("");
     setToast(null);
+    clearStudioVariationImages();
+    const anchorsPayload = imageAnchorWords.trim() || undefined;
+    setStudioMeta({
+      businessName: businessName || undefined,
+      category: category ?? undefined,
+      postType,
+      imageAnchorWords: anchorsPayload || "",
+    });
     appendStudioMessage({ role: "user", content: userMessage });
+    setTextBusy(true);
     setStudioLoading(true);
 
     try {
+      // Phase A — Maya via OpenRouter; live left-card update (no Missing Card)
+      const camp = getCampaignState();
+      const isBad = (h?: string) =>
+        !h?.trim() || /^missing\s*card/i.test(h.trim());
+      const liveVar =
+        studio.variations?.[studio.selectedVariationIndex] ||
+        camp.activeCampaign?.variations?.[camp.activeVariationIndex ?? 0] ||
+        null;
+      const currentPost =
+        liveVar && !isBad(liveVar.headline)
+          ? {
+              headline: liveVar.headline || "",
+              bodyText: liveVar.bodyText || "",
+              ctaButton: liveVar.ctaButton || "",
+              imageUrl: liveVar.imageUrl || null,
+            }
+          : liveVar?.bodyText?.trim()
+            ? {
+                headline: liveVar.bodyText.slice(0, 48),
+                bodyText: liveVar.bodyText || "",
+                ctaButton: liveVar.ctaButton || "",
+                imageUrl: liveVar.imageUrl || null,
+              }
+            : null;
+
+      const currentCard = {
+        title: currentPost?.headline || "",
+        bodyText: currentPost?.bodyText || "",
+      };
+      const messages = chat
+        .slice(-6)
+        .map((m) => ({ role: m.role, content: m.content }));
+
+      const campaignId = readActiveCampaignId();
       const res = await fetch("/api/studio/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -190,9 +336,14 @@ export function CampaignGenerator({
           category: category ?? undefined,
           businessName: businessName || undefined,
           postType,
-          imageAnchorWords: imageAnchorWords.trim() || undefined,
+          imageAnchorWords: anchorsPayload,
+          skipImages: true,
+          messages,
+          currentCard,
+          currentPost,
+          campaignId,
         }),
-        signal: AbortSignal.timeout(90_000),
+        signal: AbortSignal.timeout(45_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -200,6 +351,13 @@ export function CampaignGenerator({
         chat_reply?: string;
         soft_message?: string;
         error?: string;
+        updatedTitle?: string;
+        updatedBodyText?: string;
+        reply?: string;
+        cardUpdate?: {
+          title?: string | null;
+          bodyText?: string | null;
+        } | null;
         variations?: Array<{
           id?: string;
           label?: string;
@@ -234,93 +392,108 @@ export function CampaignGenerator({
       };
 
       if (!res.ok || data.ok === false) {
-        // Soft retry only on true hard failure — never lecture about ready-made text
         const rawErr = (data.error || C.generateErrorRetry).trim();
-        const hardFail = isBlockedStudioChatReply(rawErr)
-          ? C.generateErrorRetry
-          : rawErr.replace(
-              /בלי טקסט מוכן מראש\.?|טקסט מוכן מראש\.?|לא הצלחתי לייצר פוסט כרגע\.?/gi,
-              ""
-            ).trim() || C.generateErrorRetry;
-        appendStudioMessage({
-          role: "assistant",
-          content: hardFail,
-        });
-        setToast(C.generateErrorRetry);
+        const hardFail =
+          res.status === 429
+            ? rawErr || "אנא המתן מספר שניות לפני יצירת פוסט נוסף."
+            : isBlockedStudioChatReply(rawErr)
+              ? C.generateErrorRetry
+              : rawErr.trim() || C.generateErrorRetry;
+        appendStudioMessage({ role: "assistant", content: hardFail });
+        setToast(hardFail);
+        setStudioLoading(false);
+        setStudioImagesPending(false);
         return;
       }
 
+      // Show Maya reply immediately — prefer `reply` contract
       let replyMessage =
+        data.reply?.trim() ||
         data.replyMessage?.trim() ||
         data.chat_reply?.trim() ||
-        "הכנו שתי אופציות שונות — בחרו את מה שמדבר אליכם!";
+        "הכנתי לך פוסט מוכן — תראו משמאל.";
       if (isBlockedStudioChatReply(replyMessage)) {
-        replyMessage =
-          "הכנו שתי אופציות שונות — בחרו את מה שמדבר אליכם!";
+        replyMessage = "הכנתי לך פוסט מוכן — תראו משמאל.";
       }
 
-      const single =
-        data.post || data.postData || null;
+      // Soft cardUpdate-only path: keep current card, still show reply
+      const cuOnly = data.cardUpdate;
+      const hasCardOnlyPatch =
+        (typeof cuOnly?.title === "string" && cuOnly.title.trim()) ||
+        (typeof cuOnly?.bodyText === "string" && cuOnly.bodyText.trim()) ||
+        Boolean(data.updatedTitle?.trim() || data.updatedBodyText?.trim());
 
+      const single = data.post || data.postData || null;
       let nextVars: CampaignVariation[] = [];
-      if (Array.isArray(data.variations) && data.variations.length >= 2) {
-        nextVars = data.variations.slice(0, 2).map((v, i) => {
-          const cleaned = sanitizeVariationCopy({
-            headline: v.headline || "",
-            bodyText: v.bodyText || "",
-            ctaButton: v.ctaButton || "",
-            fallbackCta: i === 0 ? defaultCtas.var1 : defaultCtas.var2,
-          });
-          return {
-            id: normalizeVariationId(v.id, i),
-            label: v.label || (i === 0 ? VAR_1_LABEL : VAR_2_LABEL),
-            headline: cleaned.headline,
-            bodyText: cleaned.bodyText,
-            ctaButton: cleaned.ctaButton || (i === 0 ? defaultCtas.var1 : defaultCtas.var2),
-            imagePrompt: v.imagePrompt || "",
-            imageUrl: v.imageUrl || null,
-            hashtags: v.hashtags || [],
-          };
-        });
-      } else {
-        const cleaned = sanitizeVariationCopy({
-          headline: single?.headline || data.headline || "",
-          bodyText:
-            single?.bodyText || single?.body || data.bodyText || "",
-          ctaButton: single?.ctaButton || data.ctaButton || "",
-          fallbackCta: defaultCtas.var1,
-        });
-        const headline = cleaned.headline;
-        const body = cleaned.bodyText;
-        if (!headline || !body) {
-          appendStudioMessage({
-            role: "assistant",
-            content: C.generateErrorRetry,
-          });
+      const fromApi = Array.isArray(data.variations) ? data.variations[0] : null;
+      const cleaned = sanitizeVariationCopy({
+        headline:
+          (typeof cuOnly?.title === "string" && cuOnly.title.trim()) ||
+          data.updatedTitle?.trim() ||
+          fromApi?.headline ||
+          single?.headline ||
+          data.headline ||
+          studio.variations?.[0]?.headline ||
+          "",
+        bodyText:
+          (typeof cuOnly?.bodyText === "string" && cuOnly.bodyText.trim()) ||
+          data.updatedBodyText?.trim() ||
+          fromApi?.bodyText ||
+          single?.bodyText ||
+          single?.body ||
+          data.bodyText ||
+          studio.variations?.[0]?.bodyText ||
+          "",
+        ctaButton:
+          fromApi?.ctaButton ||
+          single?.ctaButton ||
+          data.ctaButton ||
+          studio.variations?.[0]?.ctaButton ||
+          "",
+        fallbackCta: defaultCtas.var1,
+      });
+
+      if (!cleaned.headline || !cleaned.bodyText) {
+        // Still show reply bubble — never hang with "no response"
+        appendStudioMessage({ role: "assistant", content: replyMessage });
+        if (!hasCardOnlyPatch) {
           setToast(C.generateErrorRetry);
-          return;
         }
-        nextVars = [
-          {
-            id: "var_1",
-            label: VAR_1_LABEL,
-            headline,
-            bodyText: body,
-            ctaButton: cleaned.ctaButton || defaultCtas.var1,
-            imagePrompt: single?.imagePrompt || data.imagePrompt || "",
-            imageUrl: single?.imageUrl || data.imageUrl || null,
-          },
-          {
-            id: "var_2",
-            label: VAR_2_LABEL,
-            headline,
-            bodyText: body,
-            ctaButton: defaultCtas.var2,
-            imagePrompt: single?.imagePrompt || data.imagePrompt || "",
-            imageUrl: single?.imageUrl || data.imageUrl || null,
-          },
-        ];
+        setStudioLoading(false);
+        setStudioImagesPending(false);
+        return;
       }
+
+      nextVars = [
+        {
+          id: "var_1",
+          label: VAR_1_LABEL,
+          headline: cleaned.headline,
+          bodyText: cleaned.bodyText,
+          ctaButton: cleaned.ctaButton || defaultCtas.var1,
+          imagePrompt:
+            fromApi?.imagePrompt ||
+            single?.imagePrompt ||
+            data.imagePrompt ||
+            userMessage,
+          imageUrl: null,
+          hashtags: fromApi?.hashtags || [],
+        },
+        {
+          id: "var_2",
+          label: VAR_2_LABEL,
+          headline: cleaned.headline,
+          bodyText: cleaned.bodyText,
+          ctaButton: cleaned.ctaButton || defaultCtas.var1,
+          imagePrompt:
+            fromApi?.imagePrompt ||
+            single?.imagePrompt ||
+            data.imagePrompt ||
+            userMessage,
+          imageUrl: null,
+          hashtags: fromApi?.hashtags || [],
+        },
+      ];
 
       if (!nextVars[0]?.headline || !nextVars[0]?.bodyText) {
         appendStudioMessage({
@@ -328,19 +501,117 @@ export function CampaignGenerator({
           content: C.generateErrorRetry,
         });
         setToast(C.generateErrorRetry);
+        setStudioLoading(false);
+        setStudioImagesPending(false);
         return;
       }
 
-      // Maya bubble + central store — live preview updates instantly (never Missing Card)
-      appendStudioMessage({ role: "assistant", content: replyMessage });
-      setStudioVariations(nextVars as [CampaignVariation, CampaignVariation]);
-      onVariationsReady?.(nextVars, userMessage);
-      applyVariation(nextVars[0]!, userMessage);
-      const softToast =
+      const applyPatch: StudioApplyPatch = {
+        headline: nextVars[0]!.headline,
+        bodyText: nextVars[0]!.bodyText,
+        ctaButton: nextVars[0]!.ctaButton,
+      };
+
+      // Keep prior image on soft edits when API returned null
+      const keepImg0 =
+        nextVars[0]!.imageUrl ||
+        studio.variations?.[0]?.imageUrl ||
+        currentPost?.imageUrl ||
+        null;
+
+      const liveVars: [CampaignVariation, CampaignVariation] = [
+        { ...nextVars[0]!, imageUrl: keepImg0 },
+        { ...nextVars[1]!, imageUrl: keepImg0 },
+      ];
+
+      // Live left card FIRST — user sees the change immediately
+      setStudioVariations(liveVars);
+      setCampaign({
+        businessName: businessName || "",
+        prompt: userMessage,
+        imageAnchorWords: anchorsPayload || "",
+        variations: [
+          {
+            id: "var_1" as const,
+            label: liveVars[0].label,
+            headline: liveVars[0].headline,
+            bodyText: liveVars[0].bodyText,
+            ctaButton: liveVars[0].ctaButton,
+            imageUrl: liveVars[0].imageUrl ?? null,
+            imagePrompt: liveVars[0].imagePrompt || "",
+          },
+          {
+            id: "var_2" as const,
+            label: liveVars[1].label,
+            headline: liveVars[1].headline,
+            bodyText: liveVars[1].bodyText,
+            ctaButton: liveVars[1].ctaButton,
+            imageUrl: liveVars[1].imageUrl ?? null,
+            imagePrompt: liveVars[1].imagePrompt || "",
+          },
+        ],
+      });
+      applyPatchToPreview(applyPatch);
+      applyVariation(liveVars[0], userMessage);
+      persistSelectedCardToActiveCampaign({
+        headline: liveVars[0].headline,
+        bodyText: liveVars[0].bodyText,
+        body: liveVars[0].bodyText,
+        ctaButton: liveVars[0].ctaButton,
+        imageUrl: liveVars[0].imageUrl,
+        imagePrompt: liveVars[0].imagePrompt,
+        businessName: businessName || "",
+      });
+
+      // Persist Maya live edits to SQLite (source of truth)
+      // Prefer cardUpdate contract; fall back to legacy updatedTitle/updatedBodyText
+      const cu = data.cardUpdate;
+      const patchTitle =
+        (typeof cu?.title === "string" && cu.title.trim()) ||
+        data.updatedTitle?.trim() ||
+        liveVars[0].headline;
+      const patchBody =
+        (typeof cu?.bodyText === "string" && cu.bodyText.trim()) ||
+        data.updatedBodyText?.trim() ||
+        liveVars[0].bodyText;
+      const hasCardPatch =
+        (typeof cu?.title === "string" && cu.title.trim()) ||
+        (typeof cu?.bodyText === "string" && cu.bodyText.trim()) ||
+        Boolean(data.updatedTitle?.trim() || data.updatedBodyText?.trim());
+      if (campaignId && hasCardPatch && (patchTitle || patchBody)) {
+        void patchCampaignInDb(campaignId, {
+          title: patchTitle,
+          bodyText: patchBody,
+          imageUrl: liveVars[0].imageUrl,
+        });
+      }
+
+      appendStudioMessage({
+        role: "assistant",
+        content: replyMessage,
+        applyPatch,
+      });
+      persistActivePost();
+      onVariationsReady?.(liveVars, userMessage);
+
+      setTextBusy(false);
+      setStudioLoading(false);
+      setToast(
         data.soft_message && !isBlockedStudioChatReply(data.soft_message)
           ? data.soft_message
-          : C.abOptionsHeader || "שתי אופציות מוכנות — שתיהן בתצוגה המקדימה";
-      setToast(softToast);
+          : "מכינה תמונה לכרטיס…"
+      );
+
+      // Phase B — single image in background (skip if soft-edit kept image)
+      const needsImages =
+        !liveVars[0]!.imageUrl ||
+        liveVars[0]!.imageUrl.startsWith("data:image/svg");
+      if (needsImages) {
+        void fillImagesInBackground(liveVars, userMessage, anchorsPayload);
+      } else {
+        setToast("הכרטיס עודכן ✓");
+        window.setTimeout(() => setToast(null), 2200);
+      }
     } catch (err) {
       console.error("[CampaignGenerator] generate threw", err);
       appendStudioMessage({
@@ -348,8 +619,10 @@ export function CampaignGenerator({
         content: C.generateErrorRetry,
       });
       setToast(C.generateErrorRetry);
-    } finally {
       setStudioLoading(false);
+      setStudioImagesPending(false);
+    } finally {
+      setTextBusy(false);
       sendingRef.current = false;
     }
   }
@@ -380,58 +653,58 @@ export function CampaignGenerator({
         </div>
       ) : null}
 
-      {chat.length > 0 || busy ? (
-        <div className="max-h-48 space-y-2 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
+      {chat.length > 0 || textBusy ? (
+        <div
+          ref={chatScrollRef}
+          className="max-h-56 space-y-2 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3"
+        >
           {chat.map((m, i) => (
             <div
               key={`${m.role}-${i}-${m.content.slice(0, 12)}`}
               className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`max-w-[90%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+                className={`max-w-[90%] space-y-2 rounded-2xl px-3 py-2 text-sm leading-relaxed ${
                   m.role === "user"
                     ? "bg-slate-900 text-white"
                     : "border border-slate-200 bg-white text-slate-800"
                 }`}
               >
-                {m.content}
+                <p className="whitespace-pre-wrap break-words">{m.content}</p>
+                {m.role === "assistant" && m.applyPatch?.headline ? (
+                  <button
+                    type="button"
+                    onClick={() => applyPatchToPreview(m.applyPatch!)}
+                    className="mt-1 inline-flex min-h-9 items-center justify-center rounded-lg bg-cyan-600 px-3 text-xs font-bold text-white hover:bg-cyan-700"
+                  >
+                    החל על הפוסט שלי
+                  </button>
+                ) : null}
               </div>
             </div>
           ))}
-          {busy ? (
+          {textBusy ? (
             <div className="flex justify-start">
               <p className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-accent">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                {aiProgress || "מכינה שתי אופציות..."}
+                {aiProgress || "מכינה את הפוסט..."}
+              </p>
+            </div>
+          ) : studio.imagesPending ? (
+            <div className="flex justify-start">
+              <p className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                מעדכנת תמונה לכרטיס…
               </p>
             </div>
           ) : null}
         </div>
       ) : null}
 
-      <div className="flex flex-wrap gap-2">
-        {QUICK_SENDS.map((q) => (
-          <button
-            key={q.id}
-            type="button"
-            disabled={busy}
-            onClick={() => void handleSendMessage(q.text)}
-            className="rounded-full border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-cyan-400 hover:bg-cyan-50 hover:text-cyan-800 disabled:opacity-40"
-          >
-            {q.label}
-          </button>
-        ))}
-      </div>
-
-      <ContentPillarTabs
-        value={postType}
-        onChange={onPostTypeChange}
-        disabled={busy}
-      />
-
+      {/* Chat input — clean: no domain/pillar tag rows */}
       <label className="block text-base font-medium text-slate-900">
         {C.tellUs}
-        <div className="mt-2 space-y-2" dir="rtl">
+        <div className="mt-2 space-y-3" dir="rtl">
           <textarea
             dir="rtl"
             value={inputPrompt}
@@ -439,27 +712,21 @@ export function CampaignGenerator({
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                void handleSendMessage();
+                if (!busy && !sendingRef.current) void handleSendMessage();
               }
             }}
             placeholder={pillarPlaceholder || C.phCampaign || C.placeholder}
-            className="min-h-28 w-full break-words rounded-2xl border border-sky-100 bg-white p-4 text-right text-base leading-relaxed text-slate-800 outline-none focus:border-accent focus:ring-2 focus:ring-accent"
+            className="min-h-32 w-full break-words rounded-2xl border border-sky-100 bg-white p-4 text-right text-base leading-relaxed text-slate-800 outline-none focus:border-accent focus:ring-2 focus:ring-accent disabled:opacity-60"
             disabled={busy}
           />
-          <div className="w-full text-right">
-            <div className="mb-1 flex items-center gap-1.5 text-xs text-slate-500">
-              <span className="font-bold text-slate-700">💡 רוצים תמונה בול?</span>
-              <span>זרקו 3-4 מילים על מה שנראה (אופציונלי):</span>
-            </div>
-            <input
-              type="text"
-              value={imageAnchorWords}
-              onChange={(e) => setImageAnchorWords(e.target.value)}
-              placeholder="למשל: סטודיו מואר עם צבעים, צלחת חמה על עץ, רכב מבריק..."
-              disabled={busy}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 transition-all focus:border-cyan-500 focus:bg-white focus:outline-none disabled:opacity-50"
-            />
-          </div>
+          <input
+            type="text"
+            value={imageAnchorWords}
+            onChange={(e) => setImageAnchorWords(e.target.value)}
+            placeholder="מילות תמונה (אופציונלי) — למשל: צלחת חמה על עץ"
+            disabled={busy}
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 outline-none focus:border-accent focus:ring-2 focus:ring-accent disabled:opacity-50"
+          />
           <div className="flex justify-start">
             <AiSendButton
               onClick={() => void handleSendMessage()}

@@ -11,12 +11,16 @@ import { MapPin, Phone, Wrench } from "lucide-react";
  */
 export const BioCardCapture = forwardRef<
   HTMLDivElement,
-  { page: ResolvedMyPage }
->(function BioCardCapture({ page }, ref) {
+  { page: ResolvedMyPage; heroImageUrl?: string | null }
+>(function BioCardCapture({ page, heroImageUrl }, ref) {
   const name = page.businessName || C.myBiz;
   const nicheCity = [page.tagline, page.address].filter(Boolean).join(" · ");
   const services = (page.services || []).slice(0, 3);
   const phone = page.phone || page.whatsapp || "";
+  const cover =
+    heroImageUrl && !heroImageUrl.startsWith("data:image/svg")
+      ? heroImageUrl
+      : page.logoUrl || page.avatarUrl || null;
 
   return (
     <div
@@ -25,25 +29,19 @@ export const BioCardCapture = forwardRef<
       className="w-[360px] overflow-hidden rounded-3xl border border-slate-200 bg-white text-right shadow-lg"
       style={{ fontFamily: "var(--font-sans, system-ui)" }}
     >
-      <div className="bg-gradient-to-br from-cyan-500 via-sky-500 to-blue-600 px-5 pb-8 pt-5">
-        <p className="text-xs font-semibold tracking-wide text-white/80">
-          Olar Social
-        </p>
-        <div className="mt-4 flex items-center gap-3">
-          {page.logoUrl || page.avatarUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={page.logoUrl || page.avatarUrl}
-              alt=""
-              crossOrigin="anonymous"
-              className="h-16 w-16 rounded-2xl border-2 border-white/40 object-cover bg-white"
-            />
-          ) : (
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/20 text-2xl font-black text-white">
-              {name.slice(0, 1)}
-            </div>
-          )}
-          <div className="min-w-0 flex-1">
+      {cover ? (
+        <div className="relative h-40 w-full bg-slate-100">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={cover}
+            alt=""
+            crossOrigin="anonymous"
+            className="h-full w-full object-cover object-center"
+          />
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/55 to-transparent px-5 pb-3 pt-10">
+            <p className="text-xs font-semibold tracking-wide text-white/80">
+              Olar Social
+            </p>
             <p
               className="truncate text-xl font-bold text-white"
               style={{ fontFamily: "var(--font-display)" }}
@@ -55,7 +53,31 @@ export const BioCardCapture = forwardRef<
             ) : null}
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="bg-gradient-to-br from-cyan-500 via-sky-500 to-blue-600 px-5 pb-8 pt-5">
+          <p className="text-xs font-semibold tracking-wide text-white/80">
+            Olar Social
+          </p>
+          <div className="mt-4 flex items-center gap-3">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/20 text-2xl font-black text-white">
+              {name.slice(0, 1)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p
+                className="truncate text-xl font-bold text-white"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                {name}
+              </p>
+              {nicheCity ? (
+                <p className="mt-0.5 truncate text-sm text-white/85">
+                  {nicheCity}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-3 px-5 py-4">
         {page.description ? (

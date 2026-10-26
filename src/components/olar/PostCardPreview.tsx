@@ -37,12 +37,16 @@ function glyphId(
   return "instagram";
 }
 
-/** Balanced preview frames — capped height, center crop, no harsh edge cut. */
-function aspectClass(network: SocialNetwork): string {
-  if (network === "google") return "aspect-video max-h-[380px]";
+/** Balanced preview frames — A/B cards force square to avoid layout shift. */
+function aspectClass(
+  network: SocialNetwork,
+  forceSquare?: boolean
+): string {
+  if (forceSquare) return "aspect-square w-full";
+  if (network === "google") return "aspect-video w-full";
   if (network === "instagram" || network === "reels" || network === "whatsapp")
-    return "aspect-square max-h-[380px]";
-  return "aspect-[4/3] max-h-[380px]";
+    return "aspect-square w-full";
+  return "aspect-[4/3] w-full";
 }
 
 function ImageSkeleton({ label }: { label: string }) {
@@ -177,6 +181,12 @@ export function PostCardPreview({
   className = "",
   /** Dual-track FB/IG publish actions (Studio) */
   publishActions,
+  /** Inline edit headline/body (RTL); blur commits via callbacks */
+  editable = false,
+  onHeadlineChange,
+  onBodyChange,
+  /** A/B grid: lock image to square to prevent layout shift */
+  squareImage = false,
 }: {
   network: SocialNetwork;
   businessName: string;
@@ -184,12 +194,16 @@ export function PostCardPreview({
   post: PostCardData;
   imageUrl?: string | null;
   imageLoading?: boolean;
-  /** True when showing Unsplash / soft fallback instead of FAL. */
+  /** True when soft/empty fallback instead of live provider URL. */
   isFallback?: boolean;
   onRetryImage?: () => void;
   waHref?: string | null;
   className?: string;
   publishActions?: ReactNode;
+  editable?: boolean;
+  onHeadlineChange?: (headline: string) => void;
+  onBodyChange?: (body: string) => void;
+  squareImage?: boolean;
 }) {
   const tag = platformLabel(network);
   const hashtags = (post.hashtags || [])
@@ -201,13 +215,27 @@ export function PostCardPreview({
     C.imageSkeletonBusy || "מכינה לך תמונה שתיראה מעולה... עוד כמה שניות";
   const isWa = network === "whatsapp";
 
+  function commitHeadline(raw: string, el: HTMLElement) {
+    if (!onHeadlineChange) return;
+    const next = raw.trim();
+    if (next && next !== post.headline) onHeadlineChange(next);
+    else if (!next) el.textContent = post.headline;
+  }
+
+  function commitBody(raw: string, el: HTMLElement) {
+    if (!onBodyChange) return;
+    const next = raw.trim();
+    if (next && next !== post.body) onBodyChange(next);
+    else if (!next) el.innerText = post.body;
+  }
+
   return (
     <article
-      className={`w-full rounded-2xl border border-slate-200 bg-white text-right shadow-md ${className || "max-w-md"}`}
+      className={`flex h-full w-full max-w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white text-right shadow-md ${className || "max-w-md"}`}
       dir="rtl"
     >
       {/* Header: business + platform tag — UI shell only */}
-      <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3">
+      <div className="flex shrink-0 items-center gap-3 border-b border-slate-100 px-4 py-3">
         {logoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -231,21 +259,19 @@ export function PostCardPreview({
         </div>
       </div>
 
-      {/* Ad image — full-width, capped height, center-balanced crop */}
+      {/* Ad image — full-width, no horizontal overflow */}
       <div
-        className={`relative mx-auto w-full overflow-hidden rounded-xl bg-slate-100 ${aspectClass(network)}`}
+        className={`relative mx-auto w-full max-w-full shrink-0 overflow-hidden rounded-xl bg-slate-100 ${aspectClass(network, squareImage)}`}
       >
         {showSkeleton ? (
-          <ImageSkeleton
-            label={C.generatingNewImage || skeletonLabel}
-          />
+          <ImageSkeleton label={C.generatingNewImage || skeletonLabel} />
         ) : imageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             key={imageUrl}
             src={imageUrl}
             alt=""
-            className="h-full w-full max-h-[380px] object-cover object-center"
+            className="absolute inset-0 h-auto max-h-full w-full object-cover object-center"
           />
         ) : (
           <div
@@ -253,7 +279,6 @@ export function PostCardPreview({
             aria-hidden
           />
         )}
-        {/* Always allow regenerate when handler provided — not only on fallback */}
         {onRetryImage && !showSkeleton ? (
           <button
             type="button"
@@ -275,15 +300,17 @@ export function PostCardPreview({
       </div>
 
       {isWa ? (
-        <WhatsAppCardBody
-          businessName={businessName}
-          logoUrl={logoUrl}
-          post={post}
-          waHref={waHref}
-        />
+        <div className="mt-auto flex flex-1 flex-col">
+          <WhatsAppCardBody
+            businessName={businessName}
+            logoUrl={logoUrl}
+            post={post}
+            waHref={waHref}
+          />
+        </div>
       ) : (
-        <>
-          <div className="space-y-2 px-4 py-4">
+        <div className="mt-auto flex flex-1 flex-col">
+          <div className="flex-1 space-y-2 px-4 py-4">
             {post.visual_concept && network === "instagram" ? (
               <p className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-500">
                 {post.visual_concept}
@@ -296,12 +323,75 @@ export function PostCardPreview({
               </p>
             ) : null}
             <h3
-              className="break-words text-lg font-bold leading-snug text-slate-950"
+              className={`break-words text-lg font-bold leading-snug text-slate-950 outline-none empty:before:pointer-events-none empty:before:text-slate-400 empty:before:content-['כותרת…'] ${
+                editable
+                  ? "cursor-text rounded-lg px-1 focus:bg-cyan-50/60 focus:ring-2 focus:ring-cyan-400/60"
+                  : ""
+              }`}
               style={{ fontFamily: "var(--font-display)" }}
+              dir="rtl"
+              contentEditable={editable}
+              suppressContentEditableWarning
+              onBlur={
+                editable
+                  ? (e) =>
+                      commitHeadline(
+                        e.currentTarget.textContent || "",
+                        e.currentTarget
+                      )
+                  : undefined
+              }
+              onClick={
+                editable
+                  ? (e) => {
+                      e.stopPropagation();
+                    }
+                  : undefined
+              }
+              onKeyDown={
+                editable
+                  ? (e) => {
+                      e.stopPropagation();
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLElement).blur();
+                      }
+                    }
+                  : undefined
+              }
             >
               {post.headline}
             </h3>
-            <p className="whitespace-pre-line break-words text-base leading-relaxed text-slate-800">
+            <p
+              className={`whitespace-pre-line break-words text-base leading-relaxed text-slate-800 outline-none ${
+                editable
+                  ? "cursor-text rounded-lg px-1 focus:bg-cyan-50/60 focus:ring-2 focus:ring-cyan-400/60"
+                  : ""
+              }`}
+              dir="rtl"
+              contentEditable={editable}
+              suppressContentEditableWarning
+              onBlur={
+                editable
+                  ? (e) =>
+                      commitBody(e.currentTarget.innerText || "", e.currentTarget)
+                  : undefined
+              }
+              onClick={
+                editable
+                  ? (e) => {
+                      e.stopPropagation();
+                    }
+                  : undefined
+              }
+              onKeyDown={
+                editable
+                  ? (e) => {
+                      e.stopPropagation();
+                    }
+                  : undefined
+              }
+            >
               {post.body}
             </p>
             {post.offer && network === "google" ? (
@@ -321,34 +411,34 @@ export function PostCardPreview({
             ) : null}
           </div>
 
-          {waHref ? (
-            <a
-              href={waHref}
-              target="_blank"
-              rel="noreferrer"
-              className="mx-4 mb-4 flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 text-base font-bold text-white hover:brightness-95"
-            >
-              <MessageCircle className="h-5 w-5 shrink-0" />
-              <span className="break-words">{C.waSendMessage}</span>
-            </a>
-          ) : network !== "google" && !publishActions ? (
-            <div className="mx-4 mb-4 flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 text-base font-bold text-white">
-              <MessageCircle className="h-5 w-5 shrink-0" />
-              <span className="break-words">{C.waSendMessage}</span>
-            </div>
-          ) : network === "google" && !publishActions ? (
-            <div className="mx-4 mb-4 flex min-h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-base font-bold text-white">
-              <Phone className="h-5 w-5 shrink-0" />
-              <span className="break-words">
-                {post.call_to_action || C.gbpCallNow}
-              </span>
-            </div>
-          ) : null}
+          <div className="mt-auto px-4 pb-4">
+            {waHref ? (
+              <a
+                href={waHref}
+                target="_blank"
+                rel="noreferrer"
+                className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 text-base font-bold text-white hover:brightness-95"
+              >
+                <MessageCircle className="h-5 w-5 shrink-0" />
+                <span className="break-words">{C.waSendMessage}</span>
+              </a>
+            ) : network !== "google" && !publishActions ? (
+              <div className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 text-base font-bold text-white">
+                <MessageCircle className="h-5 w-5 shrink-0" />
+                <span className="break-words">{C.waSendMessage}</span>
+              </div>
+            ) : network === "google" && !publishActions ? (
+              <div className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-base font-bold text-white">
+                <Phone className="h-5 w-5 shrink-0" />
+                <span className="break-words">
+                  {post.call_to_action || C.gbpCallNow}
+                </span>
+              </div>
+            ) : null}
 
-          {publishActions ? (
-            <div className="mx-4 mb-4">{publishActions}</div>
-          ) : null}
-        </>
+            {publishActions ? <div>{publishActions}</div> : null}
+          </div>
+        </div>
       )}
     </article>
   );

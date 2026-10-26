@@ -1,4 +1,5 @@
 import { AgentOutputSchema, type AgentOutput } from "../../../../schemas/agent";
+import { AI_CONFIG } from "@/lib/ai-config";
 import { ChatReplyJsonExtractor } from "../chat-reply-extractor";
 import type { ChatTurn } from "../types";
 import { fetchSignal, withTimeout } from "../with-timeout";
@@ -6,20 +7,19 @@ import { fetchSignal, withTimeout } from "../with-timeout";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /**
- * Ranked OpenRouter models (hybrid):
- * 1) cursorrules PRIMARY — haiku-5.5 (claude-3.5-haiku is retired 404)
- * 2) user priority — Sonnet for marketing Hebrew
- * 3) cursorrules OpenRouter fallback — gpt-4o-mini
- * 4–5) user priorities inside OpenRouter (client-side after models[] batch)
+ * Ranked OpenRouter models (hybrid) — text/chat exclusive path.
+ * 1) gpt-4o-mini — speed + Hebrew reliability (user override)
+ * 2) claude-haiku-5.5 — cursorrules alternate
+ * 3) claude-3.5-sonnet — marketing depth
+ * 4–5) open-source / free fallbacks inside OpenRouter only
  *
  * OpenRouter API allows at most 3 entries in `models` per request —
  * we send the top 3 via models[], then sequential-retry 4–5 if needed.
- * Prefer this list over openrouter/auto.
  */
 export const OPENROUTER_MODELS = [
+  "openai/gpt-4o-mini",
   "anthropic/claude-haiku-5.5",
   "anthropic/claude-3.5-sonnet",
-  "openai/gpt-4o-mini",
   "meta-llama/llama-3.3-70b-instruct",
   "google/gemini-2.0-flash-exp:free",
 ] as const;
@@ -30,10 +30,18 @@ export const OPENROUTER_MODELS_BATCH_SIZE = 3;
 export type OpenRouterModelId = (typeof OPENROUTER_MODELS)[number];
 
 const PRIMARY_MODEL = OPENROUTER_MODELS[0];
-const SECONDARY_MODEL = OPENROUTER_MODELS[2]; // gpt-4o-mini (cursorrules fallback)
+const SECONDARY_MODEL = "anthropic/claude-haiku-5.5";
 
 /** Per-request hard cap — fail over fast instead of hanging the route. */
 const REQUEST_TIMEOUT_MS = 28_000;
+
+/** Soft Hebrew error when OPENROUTER_API_KEY is unset. */
+export const OPENROUTER_MISSING_KEY_HE =
+  "חסר מפתח OpenRouter בשרת — הגדירו OPENROUTER_API_KEY ונסו שוב.";
+
+export function isOpenRouterConfigured(): boolean {
+  return Boolean(process.env.OPENROUTER_API_KEY?.trim());
+}
 
 function extractJson(text: string): unknown {
   const trimmed = text
@@ -391,6 +399,119 @@ export async function streamWithOpenRouter(
   throw lastErr instanceof Error
     ? lastErr
     : new Error("OpenRouter stream: all ranked models failed");
+}
+
+export type OpenRouterChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+export type OpenRouterFreeChatResult = {
+  content: string;
+  model: string;
+  latencyMs: number;
+};
+
+/**
+ * Free-form chat completions (Maya studio, non-AgentOutput JSON).
+ * Tries primary + fallbacks; never calls Together/Groq/Gemini.
+ */
+export async function chatWithOpenRouter(opts: {
+  messages: OpenRouterChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  models?: string[];
+  timeoutMs?: number;
+  jsonMode?: boolean;
+}): Promise<OpenRouterFreeChatResult> {
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(OPENROUTER_MISSING_KEY_HE);
+  }
+
+  const models =
+    opts.models?.filter(Boolean) ||
+    [
+      AI_CONFIG.MAYA_CHAT_MODEL,
+      ...AI_CONFIG.MAYA_CHAT_FALLBACKS,
+      ...OPENROUTER_MODELS,
+    ].filter((m, i, arr) => Boolean(m) && arr.indexOf(m) === i);
+
+  const timeoutMs =
+    opts.timeoutMs ?? AI_CONFIG.MAYA_CHAT_TIMEOUT_MS ?? 10_000;
+  const started = Date.now();
+  let lastErr: unknown;
+
+  for (const model of models) {
+    try {
+      const payload: Record<string, unknown> = {
+        model,
+        messages: opts.messages,
+        temperature: opts.temperature ?? 0.7,
+        max_tokens: opts.maxTokens ?? 1600,
+      };
+      if (opts.jsonMode !== false) {
+        payload.response_format = { type: "json_object" };
+      }
+
+      const res = await withTimeout(
+        fetch(OPENROUTER_URL, {
+          method: "POST",
+          headers: openRouterHeaders(apiKey),
+          body: JSON.stringify(payload),
+          signal: fetchSignal(timeoutMs),
+        }),
+        timeoutMs + 2_000,
+        `OpenRouter chat ${model}`
+      );
+
+      if (!res.ok) {
+        const body = await res.text();
+        const err = new Error(
+          `OpenRouter ${res.status}: ${body.slice(0, 240)}`
+        ) as Error & { status?: number; body?: string };
+        err.status = res.status;
+        err.body = body;
+        if (isUnknownModelError(res.status, body)) {
+          console.warn(`[openrouter] chat skip unknown model: ${model}`);
+          lastErr = err;
+          continue;
+        }
+        lastErr = err;
+        console.warn(
+          `[openrouter] chat ${model} failed → next`,
+          res.status
+        );
+        continue;
+      }
+
+      const data = (await res.json()) as {
+        model?: string;
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const content = data.choices?.[0]?.message?.content?.trim();
+      if (!content) {
+        lastErr = new Error(`OpenRouter empty content (model=${model})`);
+        continue;
+      }
+
+      return {
+        content,
+        model: data.model?.trim() || model,
+        latencyMs: Date.now() - started,
+      };
+    } catch (err) {
+      lastErr = err;
+      console.warn(
+        `[openrouter] chat ${model} error → next`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("OpenRouter chat: all models failed");
 }
 
 export {

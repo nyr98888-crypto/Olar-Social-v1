@@ -26,7 +26,7 @@ import {
   sanitizeFalPrompt,
 } from "../src/lib/ai/providers/fal";
 import { runStructuredAgent } from "../src/lib/ai/router";
-import { hasLockedSceneLeak } from "../src/lib/ai/types";
+import { promptsAreTooSimilar } from "../src/lib/ai/types";
 
 function loadEnvLocal() {
   for (const name of [".env.local", ".env"]) {
@@ -269,13 +269,13 @@ async function testSeedRandomness(hasFal: boolean) {
     `local randomFalSeed all different: ${local.join(", ")}`
   );
 
-  // Anti-lock sanitize unit check (no network)
-  const locked = sanitizeFalPrompt(
-    "photo of a mechanic garage with oil-stained floor",
-    null,
-    "serum bottle on linen"
+  // Anti-lock sanitize: identical previous prompt gets a variation hint
+  const base = "Minimal product photo of a glass serum bottle on cream linen";
+  const varied = sanitizeFalPrompt(base, base);
+  assert(
+    !promptsAreTooSimilar(varied, base),
+    "sanitizeFalPrompt forces variation when prompt matches previous"
   );
-  assert(!hasLockedSceneLeak(locked), "sanitize strips garage/workshop lock");
 
   if (!hasFal) {
     skip("FAL_KEY missing — skipping live FAL seed calls");

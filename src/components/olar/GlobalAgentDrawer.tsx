@@ -21,6 +21,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { AiSendButton } from "./AiSendButton";
 import type { OlarView } from "@/lib/olar/types";
 import { VAR_1_LABEL, VAR_2_LABEL } from "@/lib/olar/ab-variations";
+import { CLIENT_IMAGE_TIMEOUT_MS } from "@/lib/api/fetch-with-retry";
 import {
   appendStudioMessage,
   setStudioLoading,
@@ -29,6 +30,12 @@ import {
   useSelectedVariation,
   useStudioStore,
 } from "@/lib/store";
+import { persistSelectedCardToActiveCampaign } from "@/lib/store/campaign-store";
+import {
+  patchCampaignInDb,
+  readActiveCampaignId,
+  type SaveCampaignInput,
+} from "@/lib/olar/campaigns-client";
 
 /* ——— Route-context view labels ——— */
 const VIEW_LABELS: Record<string, string> = {
@@ -59,7 +66,7 @@ const VIEW_GREETINGS: Record<string, string> = {
 
 type Props = {
   activeView: OlarView;
-  onNavigateToStudio?: () => void;
+  onNavigateToStudio?: (payload?: SaveCampaignInput) => void | Promise<void>;
 };
 
 export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
@@ -130,10 +137,12 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
     const headline = opts.headline.trim();
     const bodyText = opts.body.trim();
     if (!headline || !bodyText) return;
+    if (/^missing\s*card/i.test(headline)) return;
 
     const imageUrl = opts.imageUrl || "";
     const imagePrompt = opts.imagePrompt || "";
     const cta1 = (opts.cta || "").trim() || "להזמנה מהירה בוואטסאפ";
+    const hashtags = opts.hashtags || [];
     setStudioVariations([
       {
         id: "var_1",
@@ -155,15 +164,60 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
       },
     ]);
 
+    persistSelectedCardToActiveCampaign({
+      headline,
+      bodyText,
+      body: bodyText,
+      ctaButton: cta1,
+      imageUrl: opts.imageUrl ?? null,
+      imagePrompt,
+      hashtags,
+      businessName: page.businessName || "",
+    });
+
     const saved = saveCurrentPost({
       headline,
       body: bodyText,
       cta: cta1,
-      hashtags: opts.hashtags || [],
+      hashtags,
       image_url: opts.imageUrl ?? null,
       image_prompt: opts.imagePrompt ?? null,
     });
     void syncCurrentPostToServer(saved);
+  }
+
+  function resolveActivePostPayload() {
+    const cur = loadCurrentPost();
+    const fromSelected = selected
+      ? {
+          headline: selected.headline || "",
+          bodyText: selected.bodyText || "",
+          body: selected.bodyText || "",
+          ctaButton: selected.ctaButton || "",
+          cta: selected.ctaButton || "",
+          imageUrl: selected.imageUrl || null,
+          hashtags: cur?.hashtags || [],
+        }
+      : null;
+    if (
+      fromSelected &&
+      (fromSelected.headline.trim() || fromSelected.bodyText.trim()) &&
+      !/^missing\s*card/i.test(fromSelected.headline)
+    ) {
+      return fromSelected;
+    }
+    if (cur?.headline?.trim() || cur?.body?.trim()) {
+      return {
+        headline: cur.headline || "",
+        bodyText: cur.body || "",
+        body: cur.body || "",
+        ctaButton: cur.cta || "",
+        cta: cur.cta || "",
+        imageUrl: cur.image_url || null,
+        hashtags: cur.hashtags || [],
+      };
+    }
+    return null;
   }
 
   async function send() {
@@ -192,6 +246,9 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
       const routeLabel = VIEW_LABELS[activeView] ?? activeView;
       const routeHint = `[המשתמש נמצא כרגע במסך: ${routeLabel}]`;
 
+      const currentPost = resolveActivePostPayload();
+      const campaignId = readActiveCampaignId();
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -203,6 +260,8 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
           businessProfile: isGuest ? businessProfile : undefined,
           routeContext: activeView,
           routeHint,
+          currentPost,
+          campaignId,
         }),
         signal: AbortSignal.timeout(55_000),
       });
@@ -213,9 +272,12 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
         setConversationId(data.conversationId);
       }
 
+      // Prefer `reply` for immediate bubble — never wait on image/social_post
       const reply =
-        data.message?.content ??
-        data.output?.chat_reply ??
+        (typeof data.reply === "string" && data.reply.trim()) ||
+        data.message?.content ||
+        data.output?.chat_reply ||
+        data.replyMessage ||
         "סליחה, משהו השתבש. נסו שוב.";
       appendStudioMessage({ role: "assistant", content: reply });
 
@@ -230,15 +292,45 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
         setPreviousImagePrompt(imagePrompt);
       }
 
-      if (socialPost?.headline?.trim() && socialPost?.body?.trim()) {
+      const cardUpdate =
+        data.cardUpdate &&
+        typeof data.cardUpdate === "object" &&
+        !Array.isArray(data.cardUpdate)
+          ? (data.cardUpdate as {
+              title?: string | null;
+              bodyText?: string | null;
+            })
+          : null;
+
+      const patchTitle =
+        (typeof cardUpdate?.title === "string" && cardUpdate.title.trim()) ||
+        (typeof data.updatedTitle === "string" && data.updatedTitle.trim()) ||
+        socialPost?.headline?.trim() ||
+        "";
+      const patchBody =
+        (typeof cardUpdate?.bodyText === "string" &&
+          cardUpdate.bodyText.trim()) ||
+        (typeof data.updatedBodyText === "string" &&
+          data.updatedBodyText.trim()) ||
+        socialPost?.body?.trim() ||
+        "";
+
+      if (patchTitle || patchBody || socialPost?.headline?.trim()) {
         writeCampaignToStore({
-          headline: socialPost.headline,
-          body: socialPost.body,
-          cta: socialPost.call_to_action || "",
-          hashtags: socialPost.hashtags,
+          headline: patchTitle || socialPost?.headline || "",
+          body: patchBody || socialPost?.body || "",
+          cta: socialPost?.call_to_action || "",
+          hashtags: socialPost?.hashtags,
           imageUrl,
           imagePrompt,
         });
+        if (campaignId && (patchTitle || patchBody)) {
+          void patchCampaignInDb(campaignId, {
+            title: patchTitle,
+            bodyText: patchBody,
+            imageUrl: imageUrl || null,
+          });
+        }
       }
 
       if (data.imagePending && imagePrompt) {
@@ -274,7 +366,7 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
           aspectRatio: "1:1",
           businessName: page.businessName,
         }),
-        signal: AbortSignal.timeout(55_000),
+        signal: AbortSignal.timeout(CLIENT_IMAGE_TIMEOUT_MS),
       });
       const data = (await res.json()) as {
         fallback?: boolean;
@@ -283,8 +375,11 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
       if (data.image?.url && !data.fallback) {
         const url = data.image.url;
         const prompt = data.image.prompt ?? imagePrompt;
-        updateVariationImage(0, { imageUrl: url, imagePrompt: prompt });
-        updateVariationImage(1, { imageUrl: url, imagePrompt: prompt });
+        // Update only the selected card — never overwrite both A/B with one image
+        const { getStudioState } = await import("@/lib/store");
+        const selected =
+          getStudioState().selectedVariationIndex === 1 ? 1 : 0;
+        updateVariationImage(selected, { imageUrl: url, imagePrompt: prompt });
         setPreviousImagePrompt(prompt);
 
         const cur = loadCurrentPost();
@@ -307,17 +402,61 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
 
   function openInStudio() {
     if (!selected) return;
+    const hashtags = loadCurrentPost()?.hashtags || [];
     const saved = saveCurrentPost({
       headline: selected.headline,
       body: selected.bodyText,
       cta: selected.ctaButton || "",
-      hashtags: loadCurrentPost()?.hashtags || [],
+      hashtags,
       image_url: selected.imageUrl || null,
       image_prompt: selected.imagePrompt || null,
     });
     void syncCurrentPostToServer(saved);
+
+    // Durable handoff → localStorage one_loop_active_campaign + studio store
+    const selectedCard = {
+      headline: selected.headline,
+      bodyText: selected.bodyText,
+      body: selected.bodyText,
+      ctaButton: selected.ctaButton || "",
+      imageUrl: selected.imageUrl || null,
+      imagePrompt: selected.imagePrompt || "",
+      hashtags,
+      businessName: page.businessName || "",
+      label: selected.label || "הפוסט שלך",
+    };
+    persistSelectedCardToActiveCampaign(selectedCard);
+
+    setStudioVariations([
+      {
+        id: "var_1",
+        label: selected.label || VAR_1_LABEL,
+        headline: selected.headline,
+        bodyText: selected.bodyText,
+        ctaButton: selected.ctaButton || "",
+        imageUrl: selected.imageUrl || null,
+        imagePrompt: selected.imagePrompt || "",
+      },
+      {
+        id: "var_2",
+        label: VAR_2_LABEL,
+        headline: selected.headline,
+        bodyText: selected.bodyText,
+        ctaButton: selected.ctaButton || "",
+        imageUrl: selected.imageUrl || null,
+        imagePrompt: selected.imagePrompt || "",
+      },
+    ]);
+
     setOpen(false);
-    onNavigateToStudio?.();
+    void onNavigateToStudio?.({
+      headline: selected.headline,
+      bodyText: selected.bodyText,
+      body: selected.bodyText,
+      imageUrl: selected.imageUrl || null,
+      hashtags,
+      platform: "Instagram",
+    });
   }
 
   function renderChatBody(scrollRef: RefObject<HTMLDivElement | null>) {
@@ -377,10 +516,10 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
               <button
                 type="button"
                 onClick={openInStudio}
-                className="flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border border-accent bg-accent-soft text-sm font-medium text-accent hover:bg-accent hover:text-white transition"
+                className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-accent bg-accent-soft text-base font-medium text-accent transition hover:bg-accent hover:text-white"
               >
                 <Clapperboard className="h-4 w-4" />
-                פתח וערוך בסטודיו
+                המשך לעריכה בסטודיו
               </button>
             )}
           </div>

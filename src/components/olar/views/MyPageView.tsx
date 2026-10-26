@@ -1,11 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toPng } from "html-to-image";
 import { useResolvedMyPage } from "@/lib/olar/business-profile";
+import { loadCurrentPost } from "@/lib/olar/current-post";
 import { waMeHref } from "@/lib/olar/derive-services";
 import { C } from "@/lib/olar/ui-copy";
 import { BioCardCapture } from "@/components/olar/BioCardCapture";
+import {
+  useActiveCampaignVariation,
+  useCampaignStore,
+} from "@/lib/store/campaign-store";
+import { downloadImageDirect } from "@/lib/utils/download-image";
 import {
   Copy,
   Download,
@@ -19,15 +25,54 @@ import {
   Wrench,
 } from "lucide-react";
 
+function resolveActivePostImage(opts: {
+  selectedVariationImage?: string | null;
+  logoUrl?: string | null;
+  avatarUrl?: string | null;
+}): string | null {
+  const fromVar = opts.selectedVariationImage?.trim() || null;
+  if (fromVar && !fromVar.startsWith("data:image/svg")) return fromVar;
+  const fromPost = loadCurrentPost()?.image_url?.trim() || null;
+  if (fromPost && !fromPost.startsWith("data:image/svg")) return fromPost;
+  const fromLogo = opts.logoUrl?.trim() || opts.avatarUrl?.trim() || null;
+  return fromLogo || null;
+}
+
 export function MyPageView() {
   const { page, ready } = useResolvedMyPage();
+  /** Same durable campaign store as Studio / home (one_loop_active_campaign). */
+  const campaign = useCampaignStore();
+  const selectedVariation = useActiveCampaignVariation();
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadToast, setDownloadToast] = useState<string | null>(null);
+  const [heroImage, setHeroImage] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
 
   const hasProfile = Boolean(page.businessName);
   const fullUrl = page.url ? `https://${page.url}` : "";
+
+  useEffect(() => {
+    const fromCampaign =
+      selectedVariation?.imageUrl ||
+      campaign.activeCampaign?.variations?.[
+        campaign.activeVariationIndex
+      ]?.imageUrl ||
+      null;
+    setHeroImage(
+      resolveActivePostImage({
+        selectedVariationImage: fromCampaign,
+        logoUrl: page.logoUrl,
+        avatarUrl: page.avatarUrl,
+      })
+    );
+  }, [
+    selectedVariation?.imageUrl,
+    campaign.activeCampaign?.variations,
+    campaign.activeVariationIndex,
+    page.logoUrl,
+    page.avatarUrl,
+  ]);
 
   async function copyLink() {
     if (!fullUrl) return;
@@ -56,14 +101,37 @@ export function MyPageView() {
         pixelRatio: 2,
         backgroundColor: "#ffffff",
       });
-      const a = document.createElement("a");
-      a.href = dataUrl;
-      a.download = `olar-bio-${page.slug || "card"}.png`;
-      a.click();
+      // data: URLs go through the same secure helper (no CORS issues)
+      await downloadImageDirect(
+        dataUrl,
+        `olar-bio-${page.slug || "card"}.png`
+      );
       setDownloadToast(C.bioCardDownloaded);
       window.setTimeout(() => setDownloadToast(null), 2000);
     } catch {
       setDownloadToast(null);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function downloadHeroImagePng() {
+    if (!heroImage || downloading) return;
+    setDownloading(true);
+    setDownloadToast("מוריד תמונה…");
+    try {
+      const result = await downloadImageDirect(
+        heroImage,
+        `olar-hero-${page.slug || "post"}-${Date.now()}.png`
+      );
+      setDownloadToast(
+        result.ok
+          ? "התמונה הורדה ✓"
+          : result.openedInTab
+            ? "נפתח חלון — שמרו ידנית (Ctrl+S)"
+            : "ההורדה נכשלה"
+      );
+      window.setTimeout(() => setDownloadToast(null), 2500);
     } finally {
       setDownloading(false);
     }
@@ -94,6 +162,11 @@ export function MyPageView() {
   }
 
   const nicheCity = [page.tagline, page.address].filter(Boolean).join(" · ");
+  const displayName =
+    campaign.activeCampaign?.businessName?.trim() || page.businessName;
+  const marketingHeadline = selectedVariation?.headline?.trim() || "";
+  const marketingBody = selectedVariation?.bodyText?.trim() || "";
+  const marketingCta = selectedVariation?.ctaButton?.trim() || "";
 
   return (
     <div className="w-full animate-rise space-y-6" dir="rtl">
@@ -108,20 +181,39 @@ export function MyPageView() {
         <p className="text-lg text-slate-800">{C.myPageSub}</p>
       </header>
 
-      {/* ── Bio Card (mobile-first) ── */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-md">
+      {/* ── Bio Card (mobile-first) — synced from campaign-store ── */}
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-md">
+        {/* Active campaign image — never empty/transparent frame */}
+        <div className="relative aspect-square w-full bg-slate-100 sm:aspect-[2/1]">
+          {heroImage ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={heroImage}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover object-center"
+            />
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-cyan-500 via-sky-500 to-blue-600">
+              <span className="text-5xl font-black text-white/90">
+                {displayName.slice(0, 1)}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="p-5">
         {/* Avatar / Logo + Name + Niche|City */}
         <div className="flex items-center gap-4">
           {page.logoUrl || page.avatarUrl ? (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
               src={page.logoUrl || page.avatarUrl}
-              alt={page.businessName}
+              alt={displayName}
               className="h-16 w-16 shrink-0 rounded-2xl border border-slate-200 object-cover"
             />
           ) : (
             <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 text-2xl font-black text-white">
-              {page.businessName.slice(0, 1)}
+              {displayName.slice(0, 1)}
             </div>
           )}
           <div className="min-w-0 flex-1">
@@ -129,7 +221,7 @@ export function MyPageView() {
               className="truncate text-xl font-bold text-slate-950 sm:text-2xl"
               style={{ fontFamily: "var(--font-display)" }}
             >
-              {page.businessName}
+              {displayName}
             </p>
             {nicheCity && (
               <p className="mt-0.5 truncate text-sm text-slate-600">
@@ -139,11 +231,31 @@ export function MyPageView() {
           </div>
         </div>
 
-        {page.description && (
+        {/* Selected campaign marketing copy from central store */}
+        {marketingHeadline || marketingBody ? (
+          <div className="mt-4 space-y-2 rounded-xl border border-cyan-100 bg-cyan-50/40 p-4 text-right">
+            {marketingHeadline ? (
+              <h2
+                className="text-lg font-bold text-slate-950"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                {marketingHeadline}
+              </h2>
+            ) : null}
+            {marketingBody ? (
+              <p className="whitespace-pre-line text-sm leading-relaxed text-slate-700">
+                {marketingBody}
+              </p>
+            ) : null}
+            {marketingCta ? (
+              <p className="text-sm font-semibold text-accent">{marketingCta}</p>
+            ) : null}
+          </div>
+        ) : page.description ? (
           <p className="mt-3 text-sm leading-relaxed text-slate-700">
             {page.description}
           </p>
-        )}
+        ) : null}
 
         {/* ── Quick Action Dock ── */}
         <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -202,6 +314,7 @@ export function MyPageView() {
             <MapPin className="h-4 w-4 shrink-0 text-accent" />
           </p>
         )}
+        </div>
       </section>
 
       {/* ── Services grid ── */}
@@ -270,6 +383,15 @@ export function MyPageView() {
             </button>
             <button
               type="button"
+              onClick={() => void downloadHeroImagePng()}
+              disabled={downloading || !heroImage}
+              className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-5 text-base font-medium text-emerald-900 transition hover:bg-emerald-100 disabled:opacity-50"
+            >
+              <Download className="h-5 w-5" />
+              הורד תמונה (PNG)
+            </button>
+            <button
+              type="button"
               onClick={() => void downloadBioCardPng()}
               disabled={downloading}
               className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-5 text-base font-medium text-sky-900 transition hover:bg-sky-100 disabled:opacity-50"
@@ -289,7 +411,11 @@ export function MyPageView() {
 
           {/* Offscreen / preview capture target for PNG */}
           <div className="mt-5 flex justify-center overflow-x-auto">
-            <BioCardCapture ref={cardRef} page={page} />
+            <BioCardCapture
+              ref={cardRef}
+              page={page}
+              heroImageUrl={heroImage}
+            />
           </div>
 
           {(page.instagramUrl || page.facebookUrl) && (

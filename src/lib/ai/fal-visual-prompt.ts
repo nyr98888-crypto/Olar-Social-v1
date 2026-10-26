@@ -31,7 +31,7 @@ export type FalVisualNiche =
   | "interior"
   | "general";
 
-export type FalImageSize = "landscape_4_3" | "square";
+export type FalImageSize = "landscape_4_3" | "square" | "square_hd";
 
 export type FalVisualPurpose = "post" | "banner" | "profile" | "headshot";
 
@@ -467,16 +467,14 @@ export function buildFalVisualPrompt(opts: BuildFalVisualPromptOpts): string {
 }
 
 /**
- * Posts/banners → landscape_4_3; headshot/profile → square.
+ * 1:1 / headshot/profile → square_hd; posts/banners (non-square) → landscape_4_3.
  */
 export function falImageSizeForAspect(
   aspectRatio?: "1:1" | "4:5" | "16:9" | null,
   purpose?: FalVisualPurpose | null
 ): FalImageSize {
-  if (purpose === "profile" || purpose === "headshot") return "square";
-  if (aspectRatio === "1:1" && purpose !== "banner" && purpose !== "post") {
-    return "square";
-  }
+  if (purpose === "profile" || purpose === "headshot") return "square_hd";
+  if (aspectRatio === "1:1") return "square_hd";
   return "landscape_4_3";
 }
 

@@ -164,6 +164,11 @@ export type TranslateVisualOpts = {
   englishReady?: boolean;
   /** Business category id (food/bakery) — biases dish-specific prompts */
   category?: string | null;
+  /**
+   * User image-anchor phrases: translate/passthrough only —
+   * never replace subject with dish / workshop / handyman locks.
+   */
+  skipSubjectLocks?: boolean;
 };
 
 /**
@@ -196,8 +201,10 @@ export async function translateToFalEnglishPrompt(
       : detectVisualCategory(raw, opts.niche, opts.allowedVisualStyle));
 
   const preamble = artDirectorDomainPreamble(domain);
+  const skipLocks = Boolean(opts.skipSubjectLocks || opts.englishReady);
 
   const applyDishBias = (english: string) => {
+    if (skipLocks) return english;
     const dish = resolveDishBiasedPrompt({
       description: raw,
       niche: opts.niche,
@@ -207,7 +214,7 @@ export async function translateToFalEnglishPrompt(
     return dish || english;
   };
 
-  // Already-English path (e.g. route already ran Art Director)
+  // Already-English path (e.g. route already ran Art Director / anchor prompts)
   if (
     opts.englishReady ||
     (raw.length >= 40 && !hasHebrewScript(raw))
@@ -225,18 +232,21 @@ export async function translateToFalEnglishPrompt(
   }
 
   // Dish-first shortcut: when Hebrew names a dish, prefer curated English
-  const dishOnly = resolveDishBiasedPrompt({
-    description: raw,
-    niche: opts.niche,
-    category: opts.category || opts.niche,
-  });
-  if (dishOnly) {
-    return {
-      prompt: applyVisualPromptGuardrail(dishOnly, category, domain),
-      source: "template",
-      category,
-      domainId: domain?.id ?? null,
-    };
+  // (skipped for image-anchor phrases — user subject must survive)
+  if (!opts.skipSubjectLocks) {
+    const dishOnly = resolveDishBiasedPrompt({
+      description: raw,
+      niche: opts.niche,
+      category: opts.category || opts.niche,
+    });
+    if (dishOnly) {
+      return {
+        prompt: applyVisualPromptGuardrail(dishOnly, category, domain),
+        source: "template",
+        category,
+        domainId: domain?.id ?? null,
+      };
+    }
   }
 
   if (raw) {

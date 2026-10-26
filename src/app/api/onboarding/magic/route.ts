@@ -67,7 +67,7 @@ Never literal-translate ambiguous Hebrew without the verified domain. Image prom
 }
 
 /**
- * Onboarding "תראה לי את הקסם" — OpenRouter hybrid + 4s/validate/golden pipeline.
+ * Onboarding "תראה לי את הקסם" — OpenRouter hybrid + 8s/validate/golden pipeline.
  * Always returns soft success shape (ok: true); never raw provider errors.
  */
 export async function POST(request: Request) {
@@ -87,7 +87,10 @@ export async function POST(request: Request) {
       whatsapp?: string;
       category?: string;
       goal?: string | null;
+      /** Accepted for client parity; images use generate-image / generate-post. */
+      imageAnchorWords?: string | null;
     };
+    void body.imageAnchorWords;
     const category = normalizeCategory(body.category);
     // Clean user text ONLY — never accept glued [CATEGORY:…] from clients
     const raw = stripCategoryLeak(

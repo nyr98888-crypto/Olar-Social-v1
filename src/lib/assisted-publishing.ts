@@ -7,6 +7,7 @@ import {
   isHttpUrl,
   type SocialPlatform,
 } from "@/lib/olar/social-accounts";
+import { downloadImageDirect } from "@/lib/utils/download-image";
 
 export type AssistedPublishInput = {
   platform: SocialPlatform;
@@ -25,18 +26,6 @@ export type AssistedPublishResult = {
   error?: string;
 };
 
-function triggerBlobDownload(blob: Blob, filename: string) {
-  const objectUrl = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = objectUrl;
-  a.download = filename;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2_000);
-}
-
 async function downloadImageAsFile(
   imageUrl: string,
   platform: SocialPlatform
@@ -44,31 +33,8 @@ async function downloadImageAsFile(
   if (!isHttpUrl(imageUrl) && !imageUrl.startsWith("data:")) {
     return { ok: false, openedInTab: false };
   }
-
-  const filename = `oneloop-${platform}-${Date.now()}.jpg`;
-
-  try {
-    if (imageUrl.startsWith("data:")) {
-      const res = await fetch(imageUrl);
-      const blob = await res.blob();
-      triggerBlobDownload(blob, filename);
-      return { ok: true, openedInTab: false };
-    }
-
-    const res = await fetch(imageUrl, { mode: "cors" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    triggerBlobDownload(blob, filename);
-    return { ok: true, openedInTab: false };
-  } catch {
-    // CORS / network — open image in a new tab so the user can save manually
-    try {
-      window.open(imageUrl, "_blank", "noopener,noreferrer");
-      return { ok: false, openedInTab: true };
-    } catch {
-      return { ok: false, openedInTab: false };
-    }
-  }
+  const filename = `oneloop-${platform}-${Date.now()}.png`;
+  return downloadImageDirect(imageUrl, filename);
 }
 
 /**

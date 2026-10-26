@@ -7,6 +7,7 @@ import { translateToFalEnglishPrompt } from "@/lib/ai/translate-visual-prompt";
 import {
   detectFemaleOwnerName,
   isCreativeStudioContext,
+  isLocksmithContext,
 } from "@/lib/ai/hebrew-visual-context";
 
 const ANCHOR_STYLE =
@@ -15,6 +16,9 @@ const ANCHOR_STYLE =
 /** Same avoid list as creative-studio lock — bake when domain matches, keep anchor as subject. */
 const CREATIVE_AVOID =
   "handyman, construction worker, power drill, tools, mechanic, garage, carpentry, flannel shirt, hardhat, industrial workshop, male worker, auto repair, spray booth";
+
+const LOCKSMITH_AVOID =
+  "cars, car engine, automotive garage, spray booth, mechanic, auto repair, engine block, burglar, thief, crime scene, violence";
 
 export function trimImageAnchorWords(raw?: string | null): string {
   return (raw || "").trim().slice(0, 160);
@@ -37,17 +41,20 @@ export async function resolveEnglishImageAnchors(
   if (!hasHebrewScript(trimmed)) return trimmed;
 
   try {
+    // Translate the anchor phrase itself — skip dish/workshop subject locks
+    // so Hebrew craft/product words reach FLUX as English nouns, not handyman stock.
     const { prompt } = await translateToFalEnglishPrompt({
-      description: `Convert these short visual scene words into a brief English noun phrase only (under 12 words, subject/scene only, no full ad copy): ${trimmed}`,
+      description: `Short visual subject only (under 12 English words, noun phrase, no ad copy): ${trimmed}`,
       niche: opts.niche,
       businessName: opts.businessName,
       category: opts.category,
+      skipSubjectLocks: true,
     });
     const cleaned = prompt
       .replace(/^["']|["']$/g, "")
       .replace(/\s+/g, " ")
       .trim();
-    if (!cleaned) return trimmed;
+    if (!cleaned || hasHebrewScript(cleaned)) return trimmed;
     if (cleaned.length <= 90) return cleaned;
     return cleaned.split(/[.,]/)[0]?.trim().slice(0, 90) || cleaned.slice(0, 90);
   } catch {
@@ -56,7 +63,8 @@ export async function resolveEnglishImageAnchors(
 }
 
 /**
- * A/B FLUX prompts: same anchor subject, close-up vs wide framing.
+ * A/B FLUX prompts: same anchor subject leading both frames.
+ * Option 1 = finished clean close-up; Option 2 = atmosphere / table context.
  * Domain avoids + gender cues from main userText when craft studio / female name detected.
  */
 export function buildAnchorFluxPrompts(
@@ -69,8 +77,8 @@ export function buildAnchorFluxPrompts(
   }
 ): { promptA: string; promptB: string } {
   const subject = englishAnchors.trim().slice(0, 200) || "local business craft";
-  let promptA = `Close-up commercial photography of ${subject}, ${ANCHOR_STYLE}`;
-  let promptB = `Wide-angle commercial photography of ${subject}, ${ANCHOR_STYLE}`;
+  let promptA = `${subject}, finished clean result focus, close-up pristine completed presentation, ${ANCHOR_STYLE}`;
+  let promptB = `${subject}, atmosphere and table-focused scene, inviting environment context, wider lifestyle framing, ${ANCHOR_STYLE}`;
 
   const sources = [
     opts?.userText,
@@ -78,7 +86,11 @@ export function buildAnchorFluxPrompts(
     opts?.category,
     opts?.businessName,
   ];
-  if (isCreativeStudioContext(...sources)) {
+  if (isLocksmithContext(...sources)) {
+    const avoid = `. door lock / locksmith scene only. avoid: ${LOCKSMITH_AVOID}`;
+    promptA += avoid;
+    promptB += avoid;
+  } else if (isCreativeStudioContext(...sources)) {
     const avoid = `. avoid: ${CREATIVE_AVOID}`;
     promptA += avoid;
     promptB += avoid;

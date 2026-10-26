@@ -77,6 +77,15 @@ body {
   overflow-x: hidden;
 }
 
+/* Hide scrollbars on horizontal chip strips (mobile swipe) */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 html {
   color-scheme: light;
   background-color: var(--paper);
@@ -124,7 +133,14 @@ body {
   width: 100%;
   max-width: 72rem;
   margin-inline: auto;
-  padding: 2rem 1.5rem;
+  padding: 1.5rem 1rem;
+  overflow-x: hidden;
+}
+
+@media (min-width: 640px) {
+  .olar-page {
+    padding: 2rem 1.5rem;
+  }
 }
 
 .olar-page-networks {
@@ -136,7 +152,14 @@ body {
   width: 100%;
   max-width: 56rem;
   margin-inline: auto;
-  padding: 2rem 1.5rem;
+  padding: 1.5rem 0;
+  overflow-x: hidden;
+}
+
+@media (min-width: 640px) {
+  .olar-page-quick {
+    padding-block: 2rem;
+  }
 }
 
 /* Primary crisp azure CTA — #0284C7 / hover #0369A1 */

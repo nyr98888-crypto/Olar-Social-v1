@@ -1,6 +1,7 @@
 /**
  * Single source of truth for Studio session — chat + A/B preview.
- * useSyncExternalStore (no Zustand in deps). Guest pieces → sessionStorage only.
+ * useSyncExternalStore (no Zustand in deps).
+ * Survives F5 + tab switches via localStorage `current_active_post`.
  */
 "use client";
 
@@ -27,16 +28,36 @@ export interface PostVariation {
   ctaButton: string;
 }
 
+export type StudioApplyPatch = {
+  headline: string;
+  bodyText: string;
+  ctaButton?: string;
+};
+
+export type StudioChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  /** When set, UI shows "החל על הפוסט שלי" and applies this copy to the preview. */
+  applyPatch?: StudioApplyPatch | null;
+};
+
 export interface StudioSessionState {
   businessName: string;
   category: string;
   /** Content pillar — milestone | client_satisfaction | before_after | promotion */
   postType: PostTypeId;
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  /** Optional 2–4 visual words — forwarded on image regen (image-only). */
+  imageAnchorWords: string;
+  messages: StudioChatMessage[];
   variations: [PostVariation, PostVariation] | null;
   selectedVariationIndex: number;
   isLoading: boolean;
+  /** True while A/B images are still generating after text reply. */
+  imagesPending: boolean;
 }
+
+/** Full A/B post payload — localStorage key (survives F5 + menu navigation). */
+export const CURRENT_ACTIVE_POST_KEY = "current_active_post";
 
 const STORAGE_KEY = "olar-studio-session";
 
@@ -44,10 +65,12 @@ const DEFAULT_STATE: StudioSessionState = {
   businessName: "",
   category: "",
   postType: DEFAULT_POST_TYPE,
+  imageAnchorWords: "",
   messages: [],
   variations: null,
   selectedVariationIndex: 0,
   isLoading: false,
+  imagesPending: false,
 };
 
 let state: StudioSessionState = { ...DEFAULT_STATE };
@@ -61,19 +84,104 @@ function emit() {
   for (const l of listeners) l();
 }
 
-function persistGuestPieces(next: StudioSessionState) {
+export type ActivePostData = {
+  businessName: string;
+  category: string;
+  postType: PostTypeId;
+  imageAnchorWords: string;
+  messages: StudioSessionState["messages"];
+  variations: [PostVariation, PostVariation] | null;
+  selectedVariationIndex: number;
+  updatedAt: string;
+};
+
+function toActivePostPayload(next: StudioSessionState): ActivePostData {
+  return {
+    businessName: next.businessName,
+    category: next.category,
+    postType: next.postType,
+    imageAnchorWords: next.imageAnchorWords,
+    messages: next.messages.slice(-24),
+    variations: next.variations,
+    selectedVariationIndex: next.selectedVariationIndex,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function parseStoredPayload(raw: string | null): StudioSessionState | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<StudioSessionState> & {
+      updatedAt?: string;
+    };
+    const vars = normalizeVariationsTuple(parsed.variations);
+    return {
+      businessName:
+        typeof parsed.businessName === "string" ? parsed.businessName : "",
+      category: typeof parsed.category === "string" ? parsed.category : "",
+      postType: normalizePostType(
+        typeof parsed.postType === "string" ? parsed.postType : DEFAULT_POST_TYPE
+      ),
+      imageAnchorWords:
+        typeof parsed.imageAnchorWords === "string"
+          ? parsed.imageAnchorWords.slice(0, 160)
+          : "",
+      messages: Array.isArray(parsed.messages)
+        ? parsed.messages.filter(
+            (m): m is StudioChatMessage =>
+              Boolean(
+                m &&
+                  (m.role === "user" || m.role === "assistant") &&
+                  typeof m.content === "string"
+              )
+          )
+        : [],
+      variations: vars,
+      selectedVariationIndex:
+        vars && parsed.selectedVariationIndex === 1 ? 1 : 0,
+      isLoading: false,
+      imagesPending: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Write full post (texts + 2 images) to localStorage immediately. */
+export function persistActivePost(next: StudioSessionState = state): void {
   if (!isBrowser()) return;
   try {
-    // Guests only — never write studio draft to localStorage
-    const payload = {
-      businessName: next.businessName,
-      category: next.category,
-      postType: next.postType,
-      messages: next.messages.slice(-24),
-      variations: next.variations,
-      selectedVariationIndex: next.selectedVariationIndex,
-    };
+    const payload = toActivePostPayload(next);
+    localStorage.setItem(CURRENT_ACTIVE_POST_KEY, JSON.stringify(payload));
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+export function loadActivePost(): ActivePostData | null {
+  if (!isBrowser()) return null;
+  try {
+    const raw = localStorage.getItem(CURRENT_ACTIVE_POST_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ActivePostData;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function persistGuestPieces(next: StudioSessionState) {
+  if (!isBrowser()) return;
+  const payload = toActivePostPayload(next);
+  try {
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    /* ignore */
+  }
+  // Authoritative durable copy — F5 / menu navigation must not wipe results
+  try {
+    localStorage.setItem(CURRENT_ACTIVE_POST_KEY, JSON.stringify(payload));
   } catch {
     /* ignore */
   }
@@ -81,33 +189,22 @@ function persistGuestPieces(next: StudioSessionState) {
 
 function hydrateFromSession(): StudioSessionState {
   if (!isBrowser()) return { ...DEFAULT_STATE };
+  // Prefer durable localStorage; fall back to session draft
   try {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_STATE };
-    const parsed = JSON.parse(raw) as Partial<StudioSessionState>;
-    const vars = normalizeVariationsTuple(parsed.variations);
-    return {
-      businessName: typeof parsed.businessName === "string" ? parsed.businessName : "",
-      category: typeof parsed.category === "string" ? parsed.category : "",
-      postType: normalizePostType(
-        typeof parsed.postType === "string" ? parsed.postType : DEFAULT_POST_TYPE
-      ),
-      messages: Array.isArray(parsed.messages)
-        ? parsed.messages.filter(
-            (m): m is StudioSessionState["messages"][number] =>
-              m &&
-              (m.role === "user" || m.role === "assistant") &&
-              typeof m.content === "string"
-          )
-        : [],
-      variations: vars,
-      selectedVariationIndex:
-        vars && parsed.selectedVariationIndex === 1 ? 1 : 0,
-      isLoading: false,
-    };
+    const fromLocal = parseStoredPayload(
+      localStorage.getItem(CURRENT_ACTIVE_POST_KEY)
+    );
+    if (fromLocal?.variations) return fromLocal;
   } catch {
-    return { ...DEFAULT_STATE };
+    /* ignore */
   }
+  try {
+    const fromSession = parseStoredPayload(sessionStorage.getItem(STORAGE_KEY));
+    if (fromSession) return fromSession;
+  } catch {
+    /* ignore */
+  }
+  return { ...DEFAULT_STATE };
 }
 
 let hydrated = false;
@@ -218,6 +315,7 @@ export function setStudioMeta(opts: {
   businessName?: string;
   category?: string;
   postType?: PostTypeId;
+  imageAnchorWords?: string | null;
 }) {
   setState((prev) => ({
     ...prev,
@@ -228,6 +326,10 @@ export function setStudioMeta(opts: {
       opts.postType !== undefined
         ? normalizePostType(opts.postType)
         : prev.postType,
+    imageAnchorWords:
+      opts.imageAnchorWords !== undefined
+        ? (opts.imageAnchorWords || "").trim().slice(0, 160)
+        : prev.imageAnchorWords,
   }));
 }
 
@@ -236,16 +338,52 @@ export function setStudioPostType(postType: PostTypeId) {
 }
 
 export function setStudioLoading(isLoading: boolean) {
-  setState({ isLoading });
+  if (isLoading) {
+    // New generate: wipe prior images immediately so cards show spinner, not stale FAL URLs
+    setState((prev) => ({
+      ...prev,
+      isLoading: true,
+      imagesPending: true,
+      variations: prev.variations
+        ? [
+            { ...prev.variations[0], imageUrl: "" },
+            { ...prev.variations[1], imageUrl: "" },
+          ]
+        : null,
+    }));
+    return;
+  }
+  setState({ isLoading: false });
 }
 
-export function appendStudioMessage(msg: {
-  role: "user" | "assistant";
-  content: string;
-}) {
+export function setStudioImagesPending(imagesPending: boolean) {
+  setState({ imagesPending });
+}
+
+export function setStudioMessages(messages: StudioChatMessage[]) {
+  setState({
+    messages: Array.isArray(messages) ? messages.slice(-48) : [],
+  });
+}
+
+/** Explicit image cache reset (create / send). */
+export function clearStudioVariationImages() {
+  setState((prev) => {
+    if (!prev.variations) return prev;
+    return {
+      ...prev,
+      variations: [
+        { ...prev.variations[0], imageUrl: "" },
+        { ...prev.variations[1], imageUrl: "" },
+      ],
+    };
+  });
+}
+
+export function appendStudioMessage(msg: StudioChatMessage) {
   setState((prev) => ({
     ...prev,
-    messages: [...prev.messages, msg],
+    messages: [...prev.messages, msg].slice(-48),
   }));
 }
 
@@ -310,6 +448,31 @@ export function updateVariationImage(
   });
 }
 
+export function updateVariationCopy(
+  index: number,
+  opts: { headline?: string; bodyText?: string; ctaButton?: string }
+) {
+  setState((prev) => {
+    if (!prev.variations) return prev;
+    const i = index === 1 ? 1 : 0;
+    const next: [PostVariation, PostVariation] = [
+      { ...prev.variations[0] },
+      { ...prev.variations[1] },
+    ];
+    const cur = next[i]!;
+    next[i] = {
+      ...cur,
+      headline:
+        opts.headline !== undefined ? opts.headline : cur.headline,
+      bodyText:
+        opts.bodyText !== undefined ? opts.bodyText : cur.bodyText,
+      ctaButton:
+        opts.ctaButton !== undefined ? opts.ctaButton : cur.ctaButton,
+    };
+    return { ...prev, variations: next };
+  });
+}
+
 export function clearStudioSession() {
   state = { ...DEFAULT_STATE };
   if (isBrowser()) {
@@ -318,8 +481,36 @@ export function clearStudioSession() {
     } catch {
       /* ignore */
     }
+    try {
+      localStorage.removeItem(CURRENT_ACTIVE_POST_KEY);
+    } catch {
+      /* ignore */
+    }
+    try {
+      localStorage.removeItem("one_loop_studio_messages");
+    } catch {
+      /* ignore */
+    }
   }
   emit();
+}
+
+/** Re-apply `current_active_post` from localStorage into the live store. */
+export function hydrateStudioFromActivePost(): boolean {
+  if (!isBrowser()) return false;
+  try {
+    const restored = parseStoredPayload(
+      localStorage.getItem(CURRENT_ACTIVE_POST_KEY)
+    );
+    if (!restored?.variations) return false;
+    state = { ...restored, isLoading: false, imagesPending: false };
+    hydrated = true;
+    persistGuestPieces(state);
+    emit();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Hook helpers for send flow */

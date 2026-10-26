@@ -100,22 +100,25 @@ export function buildGoldenPost(
   return buildEmptyPostResponse(ctx);
 }
 
-/** Soft retry only — never lecture about "ready-made" / prewritten text. */
-export const SOFT_FAIL_REPLY = "חלה שגיאה בייצור, אנא נסה שנית";
+/** Neutral retry — never lecture; generate-post / studio use grounded dual instead. */
+export const SOFT_FAIL_REPLY = "הכנתי לך פוסט מוכן — אפשר להמשיך לערוך בסטודיו!";
 
-/** Blocked chat_reply strings — lecture / soft-fail must never surface as Maya success copy. */
+/** Legacy alias kept for imports that still reference the old soft-fail string. */
+export const LEGACY_SOFT_FAIL_REPLY = "חלה שגיאה בייצור, אנא נסה שנית";
+
+/** Blocked chat_reply strings — must never surface as Maya success copy. */
 export function isBlockedStudioChatReply(text: string): boolean {
   const t = (text || "").trim();
   if (!t) return false;
   return (
-    t === SOFT_FAIL_REPLY ||
+    t === LEGACY_SOFT_FAIL_REPLY ||
     /בלי טקסט מוכן|טקסט מוכן מראש|לא הצלחתי לייצר פוסט כרגע|חלה שגיאה בייצור/i.test(
       t
     )
   );
 }
 
-/** Soft AgentOutput with null/empty social_post — never canned niche copy. */
+/** Soft AgentOutput — callers should prefer dualGroundedVariations for real copy. */
 export function buildGoldenAgentOutput(
   ctx: PostInputContext = { rawPrompt: "" },
   _niche?: GoldenNiche
@@ -157,10 +160,10 @@ export function preferDraftOrEmpty(
       },
     };
   }
+  const reply = output.chat_reply?.trim() || "";
   return {
     ...buildGoldenAgentOutput(ctx),
     chat_reply:
-      output.chat_reply?.trim() ||
-      SOFT_FAIL_REPLY,
+      reply && !isBlockedStudioChatReply(reply) ? reply : SOFT_FAIL_REPLY,
   };
 }
