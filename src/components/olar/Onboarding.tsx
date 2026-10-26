@@ -468,7 +468,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   }
 
   async function startMagic() {
-    if (magicBusyRef.current || phase === "working") return;
+    // Guard: disable CTA + block double-submit (landLocked = magicBusy || working)
+    if (magicBusyRef.current || phase === "working" || magicBusy) return;
 
     const raw = stripCategoryLeak(input.trim());
     if (!raw) {
@@ -477,7 +478,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     }
 
     magicBusyRef.current = true;
-    setMagicBusy(true);
+    setMagicBusy(true); // loading: true — button disabled via landLocked
 
     const local = buildProfileFromInput(raw);
     if (selectedCategory) {
@@ -492,7 +493,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     setVariations([]);
     setSelectedVarIndex(0);
 
-    const minWait = new Promise((r) => setTimeout(r, Math.min(WORK_MS, 4500)));
+    // Async wait only — never block the main thread with while/sync loops
+    const minWait = new Promise<void>((r) =>
+      setTimeout(r, Math.min(WORK_MS, 4500))
+    );
     let finalProfile = local;
     const anchorsPayload = imageAnchorWords.trim() || undefined;
     setStudioMeta({

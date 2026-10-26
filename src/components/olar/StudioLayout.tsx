@@ -131,16 +131,22 @@ function paintCampaignFromDb(campaign: SavedCampaign): boolean {
  * On studio mount: SQLite campaign (URL id / latest) is source of truth,
  * then localStorage `one_loop_active_campaign` as cache.
  * Always overwrites blank / "Missing Card N" shells — never leaves them visible.
+ *
+ * @param opts.fromStorage — re-read localStorage (mount / storage event).
+ *   When false, use in-memory campaign only (avoids emit→subscriber loops).
  */
-function hydrateStudioFromCampaignStore(): boolean {
-  // Direct localStorage read (authoritative handoff key) then sync memory
-  try {
-    const raw = localStorage.getItem(ONE_LOOP_CAMPAIGN_KEY);
-    if (raw) hydrateCampaignFromStorage();
-  } catch {
-    /* ignore */
+function hydrateStudioFromCampaignStore(opts?: {
+  fromStorage?: boolean;
+}): boolean {
+  const fromStorage = opts?.fromStorage !== false;
+  if (fromStorage) {
+    // Single storage read — never call hydrateCampaignFromStorage twice
+    try {
+      hydrateCampaignFromStorage();
+    } catch {
+      /* ignore */
+    }
   }
-  hydrateCampaignFromStorage();
 
   let camp = getCampaignState();
   let vars = camp.activeCampaign?.variations;
@@ -216,9 +222,12 @@ function hydrateStudioFromCampaignStore(): boolean {
 export function StudioLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Immediate paint from localStorage cache (no Missing Card flash)
-    hydrateStudioFromCampaignStore();
+    hydrateStudioFromCampaignStore({ fromStorage: true });
 
     let cancelled = false;
+    /** Prevents studio↔campaign subscribe callbacks from re-entering forever. */
+    let syncing = false;
+
     async function hydrateFromSqlite() {
       try {
         let idNum = NaN;
@@ -248,68 +257,100 @@ export function StudioLayout({ children }: { children: ReactNode }) {
       }
     }
 
+    function studioNeedsHydration(): boolean {
+      const live = getStudioState();
+      if (live.isLoading) return false;
+      return (
+        !live.variations?.[0] ||
+        isBlankOrMissingHeadline(live.variations[0].headline) ||
+        !live.variations[0].bodyText?.trim()
+      );
+    }
+
+    function campaignHasPaintableContent(): boolean {
+      const vars = getCampaignState().activeCampaign?.variations;
+      if (!vars?.[0]) return false;
+      return !(
+        isBlankOrMissingHeadline(vars[0].headline) && !vars[0].bodyText?.trim()
+      );
+    }
+
     function mirrorStudioIntoCampaign() {
-      const studio = getStudioState();
-      setCampaignLoading(studio.isLoading || studio.imagesPending);
-      setActiveVariationIndex(studio.selectedVariationIndex === 1 ? 1 : 0);
-      persistMessages(studio.messages);
+      if (syncing) return;
+      syncing = true;
+      try {
+        const studio = getStudioState();
+        setCampaignLoading(studio.isLoading || studio.imagesPending);
+        setActiveVariationIndex(studio.selectedVariationIndex === 1 ? 1 : 0);
+        persistMessages(studio.messages);
 
-      if (!studio.variations) return;
+        if (!studio.variations) return;
 
-      const a = studio.variations[0];
-      const b = studio.variations[1];
-      // Never persist blank / Missing Card shells
-      if (
-        isBlankOrMissingHeadline(a?.headline) &&
-        !a?.bodyText?.trim() &&
-        isBlankOrMissingHeadline(b?.headline) &&
-        !b?.bodyText?.trim()
-      ) {
-        return;
+        const a = studio.variations[0];
+        const b = studio.variations[1];
+        // Never persist blank / Missing Card shells
+        if (
+          isBlankOrMissingHeadline(a?.headline) &&
+          !a?.bodyText?.trim() &&
+          isBlankOrMissingHeadline(b?.headline) &&
+          !b?.bodyText?.trim()
+        ) {
+          return;
+        }
+
+        setCampaign({
+          businessName: studio.businessName || "",
+          prompt:
+            studio.messages.filter((m) => m.role === "user").at(-1)?.content ||
+            "",
+          imageAnchorWords: studio.imageAnchorWords || "",
+          variations: [
+            toCampaignVariation(studio.variations[0], 0),
+            toCampaignVariation(studio.variations[1], 1),
+          ],
+        });
+      } finally {
+        syncing = false;
       }
+    }
 
-      setCampaign({
-        businessName: studio.businessName || "",
-        prompt:
-          studio.messages.filter((m) => m.role === "user").at(-1)?.content ||
-          "",
-        imageAnchorWords: studio.imageAnchorWords || "",
-        variations: [
-          toCampaignVariation(studio.variations[0], 0),
-          toCampaignVariation(studio.variations[1], 1),
-        ],
-      });
+    function maybeHydrateStudioFromCampaign() {
+      if (syncing) return;
+      if (!studioNeedsHydration()) return;
+      // Critical: do NOT hydrate (or touch storage) when campaign is also empty —
+      // hydrateCampaignFromStorage() used to emit() unconditionally and freeze Home.
+      if (!campaignHasPaintableContent()) return;
+      syncing = true;
+      try {
+        // In-memory only — caller already observed a campaign emit
+        hydrateStudioFromCampaignStore({ fromStorage: false });
+      } finally {
+        syncing = false;
+      }
     }
 
     // Re-hydrate after first mirror in case studio still blank
-    if (
-      !getStudioState().variations ||
-      isBlankOrMissingHeadline(getStudioState().variations?.[0]?.headline) ||
-      !getStudioState().variations?.[0]?.bodyText?.trim()
-    ) {
-      hydrateStudioFromCampaignStore();
+    if (studioNeedsHydration()) {
+      hydrateStudioFromCampaignStore({ fromStorage: false });
     }
 
     mirrorStudioIntoCampaign();
 
     const unsubStudio = subscribeStudio(mirrorStudioIntoCampaign);
-    const unsubCampaign = subscribeCampaignStore(() => {
-      const live = getStudioState();
-      if (
-        (isBlankOrMissingHeadline(live.variations?.[0]?.headline) ||
-          !live.variations?.[0]?.bodyText?.trim()) &&
-        !live.isLoading
-      ) {
-        hydrateStudioFromCampaignStore();
-      }
-    });
+    const unsubCampaign = subscribeCampaignStore(maybeHydrateStudioFromCampaign);
 
     function onStorage(e: StorageEvent) {
       if (
         e.key === ONE_LOOP_CAMPAIGN_KEY ||
         e.key === "one_loop_active_campaign"
       ) {
-        hydrateStudioFromCampaignStore();
+        if (syncing) return;
+        syncing = true;
+        try {
+          hydrateStudioFromCampaignStore({ fromStorage: true });
+        } finally {
+          syncing = false;
+        }
       }
       if (e.key === ONE_LOOP_STUDIO_MESSAGES_KEY) {
         const msgs = loadPersistedMessages();

@@ -220,6 +220,8 @@ function setState( partial: Partial<StudioSessionState> | ((prev: StudioSessionS
   ensureHydrated();
   const next =
     typeof partial === "function" ? partial(state) : { ...state, ...partial };
+  // Same-reference no-op (e.g. selectVariationIndex early return) — skip emit.
+  if (next === state) return;
   state = next;
   persistGuestPieces(state);
   emit();

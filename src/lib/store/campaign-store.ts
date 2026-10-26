@@ -335,6 +335,16 @@ function setState(
   ensureHydrated();
   const next =
     typeof partial === "function" ? partial(state) : { ...state, ...partial };
+  // Skip no-op updates — unconditional emit() re-enters StudioLayout sync and freezes Home.
+  if (next === state) return;
+  if (
+    next.isLoading === state.isLoading &&
+    next.activeVariationIndex === state.activeVariationIndex &&
+    next.activeCampaign === state.activeCampaign &&
+    next.scheduledPosts === state.scheduledPosts
+  ) {
+    return;
+  }
   state = next;
   persistToLocalStorage(state);
   emit();
@@ -357,7 +367,28 @@ export function hydrateCampaignFromStorage(): boolean {
   const restored = readFromLocalStorage();
   hydrated = true;
   if (!restored) return false;
-  state = restored;
+  // Avoid emit storms when subscriber → hydrate → emit → subscriber loops.
+  // scheduledPosts is always a fresh array from JSON.parse — compare by value.
+  const prev = state;
+  const sameCampaign =
+    prev.activeVariationIndex === restored.activeVariationIndex &&
+    prev.activeCampaign?.businessName === restored.activeCampaign?.businessName &&
+    prev.activeCampaign?.prompt === restored.activeCampaign?.prompt &&
+    prev.activeCampaign?.imageAnchorWords ===
+      restored.activeCampaign?.imageAnchorWords &&
+    JSON.stringify(prev.activeCampaign?.variations ?? null) ===
+      JSON.stringify(restored.activeCampaign?.variations ?? null);
+  const sameSchedule =
+    JSON.stringify(prev.scheduledPosts) ===
+    JSON.stringify(restored.scheduledPosts);
+  if (sameCampaign && sameSchedule) {
+    // Keep live in-flight loading; storage always restores isLoading=false
+    return Boolean(restored.activeCampaign?.variations);
+  }
+  state = {
+    ...restored,
+    isLoading: sameCampaign ? prev.isLoading : restored.isLoading,
+  };
   emit();
   return Boolean(restored.activeCampaign?.variations);
 }
@@ -517,10 +548,15 @@ export function updateVariationImage(index: number, imageUrl: string | null) {
 }
 
 export function setActiveVariationIndex(index: number) {
-  setState({ activeVariationIndex: index === 1 ? 1 : 0 });
+  const next = index === 1 ? 1 : 0;
+  ensureHydrated();
+  if (state.activeVariationIndex === next) return;
+  setState({ activeVariationIndex: next });
 }
 
 export function setCampaignLoading(isLoading: boolean) {
+  ensureHydrated();
+  if (state.isLoading === isLoading) return;
   setState({ isLoading });
 }
 
