@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  GUEST_COOKIE,
+  guestCookieOptions,
+} from "@/lib/guest-cookie";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -32,7 +36,19 @@ export async function GET(request: Request) {
         );
       }
 
-      return NextResponse.redirect(`${origin}${next}`);
+      // Clear guest cookie so session is real auth going forward
+      const res = NextResponse.redirect(`${origin}${next}`);
+      res.cookies.set(GUEST_COOKIE, "", {
+        ...guestCookieOptions(0),
+        maxAge: 0,
+      });
+      // Signal client to finalize onboarding + restore profile from localStorage
+      res.cookies.set("olar_oauth_just_done", "1", {
+        path: "/",
+        maxAge: 120,
+        sameSite: "lax",
+      });
+      return res;
     }
   }
 

@@ -1,7 +1,7 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { isSupabaseConfigured, getSupabaseEnv } from "./config";
-import { GUEST_COOKIE, GUEST_COOKIE_VALUE } from "@/lib/guest";
+import { GUEST_COOKIE, GUEST_COOKIE_VALUE } from "@/lib/guest-cookie";
 
 type CookieToSet = {
   name: string;
@@ -60,7 +60,8 @@ export async function updateSession(request: NextRequest) {
       path.startsWith("/login") ||
       path.startsWith("/auth") ||
       path.startsWith("/api/guest") ||
-      path.startsWith("/api/health");
+      path.startsWith("/api/health") ||
+      path.startsWith("/api/onboarding");
 
     if (!isGuest && path === "/") {
       const redirectUrl = request.nextUrl.clone();

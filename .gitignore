@@ -10,6 +10,11 @@
 
 # testing
 /coverage
+/test-report
+/playwright-report
+/test-results
+/blob-report
+/playwright/.cache
 
 # next.js
 /.next/

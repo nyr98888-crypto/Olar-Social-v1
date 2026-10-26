@@ -6,11 +6,16 @@ import type {
 import { isBrandDnaComplete } from "../../../schemas/agent";
 import { hasLockedSceneLeak, type ChatTurn } from "./types";
 import { findForbiddenHits } from "./validator";
+import {
+  validateAndSanitizeAgentOutput,
+  type PostInputContext,
+} from "./pipeline-validator";
+import { extractPriceMatches } from "./guardrails";
 
 /**
  * Light post-validate helpers for the publication pipeline.
- * Goal: stop invented prices / phones / discounts / locked scenes / niche leaks from shipping.
- * Keep pragmatic — not a full NLP fact-checker.
+ * Price / phone stripping is owned by pipeline-validator + guardrails;
+ * this module keeps intent contracts + niche lock + claim awareness.
  */
 
 export function buildGroundingCorpus(args: {
@@ -34,11 +39,7 @@ export function buildGroundingCorpus(args: {
 export function extractSpecificClaims(text: string): string[] {
   const claims: string[] = [];
 
-  const prices =
-    text.match(
-      /(?:₪|\$|€)\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*(?:ש["״']?ח|שקלים?|nis|ils)/gi
-    ) ?? [];
-  claims.push(...prices);
+  claims.push(...extractPriceMatches(text));
 
   const discounts = text.match(/\d+\s*%|\d+\s*אחוז/gi) ?? [];
   claims.push(...discounts);
@@ -55,7 +56,6 @@ function claimIsGrounded(claim: string, grounding: string): boolean {
   const compactGround = grounding.replace(/\s+/g, "");
   if (compactGround.includes(compactClaim)) return true;
 
-  // Digit core (e.g. "50" from "50%" or "₪50") must appear in grounding
   const digits = claim.replace(/[^\d]/g, "");
   if (digits.length >= 2 && grounding.includes(digits)) return true;
 
@@ -73,9 +73,8 @@ export function socialPostHasUngroundedClaims(
 }
 
 /**
- * Enforce text-only / missing-info contracts and strip ungrounded campaign claims.
- * Mutates and returns the same output object.
- * Aligns with Niche Lock: incomplete Brand DNA → ask business type before visuals.
+ * Enforce text-only / missing-info contracts and sanitize ungrounded prices
+ * via pipeline-validator (strip/replace — do not null the whole post).
  */
 export function enforcePublicationGrounding(
   output: AgentOutput,
@@ -85,20 +84,20 @@ export function enforcePublicationGrounding(
     brandDna?: BrandDna | null;
     visionNotes: string | null;
     history: ChatTurn[];
+    phone?: string;
+    whatsapp?: string;
+    businessName?: string;
   }
 ): AgentOutput {
-  // Text-only / ask-first contracts
   if (output.intent === "chit_chat" || output.intent === "missing_info") {
     output.social_post = null;
     output.image_task.generate_image = false;
     return output;
   }
 
-  // Niche Lock incomplete: visuals require business_type + allowed_visual_style
   if (output.image_task.generate_image && !isBrandDnaComplete(args.brandDna)) {
     output.image_task.generate_image = false;
     delete output.image_task.prompt;
-    // Keep social_post if grounded; nudge for business type so Niche Lock can be set
     if (!output.chat_reply?.includes("סוג העסק")) {
       output.chat_reply = `${output.chat_reply?.trim() ?? ""}\n\nלפני ויז'ואל — מה סוג העסק? (למשל מוסך, קוסמטיקאית, רואה חשבון)`.trim();
     }
@@ -107,24 +106,27 @@ export function enforcePublicationGrounding(
     }
   }
 
-  const grounding = buildGroundingCorpus(args);
-
-  // Campaign/refinement: drop invented specifics instead of shipping them
-  if (
-    output.social_post &&
-    socialPostHasUngroundedClaims(output.social_post, grounding)
-  ) {
-    output.intent = "missing_info";
-    output.social_post = null;
-    output.image_task.generate_image = false;
-    if (!output.chat_reply?.trim()) {
-      output.chat_reply =
-        "רגע — חסר לי פרט קונקרטי (מחיר/מבצע/טלפון) מהצד שלך לפני שאפרסם. מה בדיוק לציין בפוסט?";
+  // Sanitize invented prices/phones in-place (supersedes nulling the post)
+  if (output.social_post) {
+    const ctx: PostInputContext = {
+      rawPrompt: [
+        args.userMessage,
+        args.brand ? JSON.stringify(args.brand) : "",
+        args.visionNotes ?? "",
+        ...args.history.map((t) => t.content),
+      ].join("\n"),
+      businessName: args.businessName ?? args.brand?.brand_name,
+      phone: args.phone,
+      whatsapp: args.whatsapp,
+      niche: args.brandDna?.business_type,
+    };
+    const result = validateAndSanitizeAgentOutput(output, ctx);
+    if (!result.ok) {
+      // Leave social_post for text-service / golden layer; log only
+      console.error("[grounding] sanitize incomplete", result.reasons);
     }
-    return output;
   }
 
-  // Block locked stock scenes + Brand DNA forbidden_elements from ever reaching FAL
   if (output.image_task.generate_image && output.image_task.prompt) {
     const prompt = output.image_task.prompt;
     const nicheHits = findForbiddenHits(
@@ -132,11 +134,7 @@ export function enforcePublicationGrounding(
       args.brandDna?.forbidden_elements
     );
     if (hasLockedSceneLeak(prompt) || nicheHits.length > 0) {
-      // Leave generate_image true so router Prompt Guardrail can retry LLM;
-      // only strip here when we are not going to retry (router owns retry).
-      // Soft-flag: keep prompt for guardrail correction path.
       if (hasLockedSceneLeak(prompt) && nicheHits.length === 0) {
-        // Legacy locked scenes without DNA list — block immediately
         output.image_task.generate_image = false;
         delete output.image_task.prompt;
       }

@@ -1,6 +1,7 @@
+import "./globals.css";
+
 import type { Metadata, Viewport } from "next";
 import { Heebo, Frank_Ruhl_Libre } from "next/font/google";
-import "./globals.css";
 
 const heebo = Heebo({
   subsets: ["hebrew", "latin"],
@@ -15,8 +16,8 @@ const frank = Frank_Ruhl_Libre({
 });
 
 export const metadata: Metadata = {
-  title: "יונה — סוכנת סושיאל",
-  description: "Social Swiss Army Knife — יצירת פוסטים ותמונות עם יונה",
+  title: "אולר סושיאל — Olar Social",
+  description: "אולר סושיאל — יונה AI, סטודיו, יומן, לידים ואנליטיקה במקום אחד · olar.me",
 };
 
 export const viewport: Viewport = {
@@ -24,7 +25,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 5,
   viewportFit: "cover",
-  themeColor: "#f7f3ec",
+  themeColor: "#f8fafc",
 };
 
 export default function RootLayout({
@@ -33,9 +34,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="he" dir="rtl" className={`${heebo.variable} ${frank.variable}`}>
+    <html
+      lang="he"
+      dir="rtl"
+      className={`${heebo.variable} ${frank.variable}`}
+    >
       <body
-        className="min-h-full antialiased"
+        className="min-h-full bg-paper text-ink antialiased"
         style={
           {
             "--font-body": "var(--font-heebo), Heebo, sans-serif",

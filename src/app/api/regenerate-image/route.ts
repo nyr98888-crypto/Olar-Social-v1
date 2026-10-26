@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getAppSession } from "@/lib/auth/session";
-import { generateImageWithFal } from "@/lib/ai/providers/fal";
-import { jsonClientError } from "@/lib/api/client-error";
+import {
+  generateImage,
+  IMAGE_PLACEHOLDER_DATA_URI,
+} from "@/lib/ai/image-service";
 import { validateImagePrompt } from "@/lib/ai/validator";
 import {
   mergeBrandDna,
@@ -60,7 +62,7 @@ export async function POST(request: Request) {
         );
       }
 
-      const image = await generateImageWithFal({
+      const image = await generateImage({
         prompt: basePrompt,
         aspectRatio: aspectRatio ?? "1:1",
         previousPrompt: previousImagePrompt ?? null,
@@ -136,7 +138,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const image = await generateImageWithFal({
+    const image = await generateImage({
       prompt: basePrompt,
       aspectRatio: aspectRatio ?? "1:1",
       previousPrompt,
@@ -165,8 +167,34 @@ export async function POST(request: Request) {
       .select("id, content, image_url, image_seed, created_at")
       .single();
 
-    return NextResponse.json({ image, message: msg });
+    return NextResponse.json({ ok: true, fallback: false, image, message: msg });
   } catch (err) {
-    return jsonClientError(err, 503);
+    console.error(
+      "[api/regenerate-image] soft placeholder",
+      err instanceof Error ? err.message : err
+    );
+    const promptHint =
+      typeof (err as { prompt?: string }).prompt === "string"
+        ? (err as { prompt: string }).prompt
+        : "brand social visual";
+    return NextResponse.json({
+      ok: true,
+      fallback: true,
+      soft_message:
+        "\u05d4\u05e4\u05d5\u05e1\u05d8 \u05de\u05d5\u05db\u05df! \u05e0\u05d9\u05ea\u05df \u05dc\u05e2\u05e8\u05d5\u05da \u05d5\u05dc\u05dc\u05d8\u05e9 \u05d0\u05d5\u05ea\u05d5 \u05db\u05e8\u05e6\u05d5\u05e0\u05da.",
+      image: {
+        url: IMAGE_PLACEHOLDER_DATA_URI,
+        seed: 0,
+        prompt: promptHint,
+      },
+      message: {
+        id: `soft-img-${Date.now()}`,
+        content:
+          "\u05d4\u05db\u05e0\u05ea\u05d9 \u05d2\u05e8\u05e1\u05d4 \u05dc\u05ea\u05e6\u05d5\u05d2\u05d4 \u2014 \u05e0\u05d9\u05ea\u05df \u05dc\u05e0\u05e1\u05d5\u05ea \u05e9\u05d5\u05d1 \u05dc\u05d9\u05e6\u05d5\u05e8 \u05d5\u05d9\u05d6\u05d5\u05d0\u05dc \u05de\u05dc\u05d0.",
+        image_url: IMAGE_PLACEHOLDER_DATA_URI,
+        image_seed: 0,
+        created_at: new Date().toISOString(),
+      },
+    });
   }
 }

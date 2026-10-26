@@ -1,21 +1,54 @@
+/* Tailwind CSS v4 */
 @import "tailwindcss";
 
-:root {
-  --ink: #1a1612;
-  --ink-soft: #3d342c;
-  --paper: #f7f3ec;
-  --paper-deep: #ebe4d8;
-  --panel: #fffdf8;
-  --accent: #0f6e56;
-  --accent-hover: #0c5a46;
-  --accent-soft: #d8efe7;
-  --line: #d9d0c2;
-  --danger: #b42318;
-  --yona: #0f6e56;
-  --user-bubble: #1a1612;
-  --shadow: 0 12px 40px rgba(26, 22, 18, 0.08);
+@source "../**/*.{js,ts,jsx,tsx,mdx}";
+
+/* Crisp Clear Sky — deep azure sky-600 (#0284C7) for both themes */
+:root,
+[data-theme="minimal"] {
+  --ink: #0f172a;
+  --ink-soft: #1e293b;
+  --paper: #f8fafc;
+  --paper-deep: #e2e8f0;
+  --panel: #ffffff;
+  --accent: #0284c7;
+  --accent-hover: #0369a1;
+  --accent-soft: #f0f9ff;
+  --line: #e0f2fe;
+  --danger: #b91c1c;
+  --yona: #0284c7;
+  --user-bubble: #0f172a;
+  --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  --shadow-cta: 0 4px 14px rgba(2, 132, 199, 0.25);
+  --radius-card: 0.75rem;
+  --radius-btn: 0.5rem;
+  --radius-input: 0.5rem;
+  --radius-icon: 0.5rem;
   --font-display: "Frank Ruhl Libre", "Times New Roman", serif;
   --font-body: "Heebo", "Segoe UI", sans-serif;
+  --text-base: 1rem;
+}
+
+/* Premium — cloud paper, same crisp azure CTAs */
+[data-theme="premium"] {
+  --ink: #0f172a;
+  --ink-soft: #1e293b;
+  --paper: #f8fafc;
+  --paper-deep: #e0f2fe;
+  --panel: #ffffff;
+  --accent: #0284c7;
+  --accent-hover: #0369a1;
+  --accent-soft: #f0f9ff;
+  --line: #e0f2fe;
+  --danger: #b91c1c;
+  --yona: #0284c7;
+  --user-bubble: #0f172a;
+  --shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+  --shadow-cta: 0 4px 14px rgba(2, 132, 199, 0.25);
+  --radius-card: 1.25rem;
+  --radius-btn: 9999px;
+  --radius-input: 9999px;
+  --radius-icon: 9999px;
 }
 
 @theme inline {
@@ -27,6 +60,7 @@
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-soft: var(--accent-soft);
+  --color-yona: var(--yona);
   --color-line: var(--line);
   --color-danger: var(--danger);
   --font-display: var(--font-display);
@@ -43,17 +77,130 @@ body {
   overflow-x: hidden;
 }
 
+html {
+  color-scheme: light;
+  background-color: var(--paper);
+  font-size: 16px;
+}
+
 body {
   margin: 0;
   color: var(--ink);
   font-family: var(--font-body);
-  background:
-    radial-gradient(1200px 600px at 100% -10%, #d8efe7 0%, transparent 55%),
-    radial-gradient(900px 500px at -10% 110%, #ebe4d8 0%, transparent 50%),
-    var(--paper);
+  font-size: 1rem;
+  line-height: 1.6;
+  background: var(--paper);
   -webkit-font-smoothing: antialiased;
-  /* Avoid iOS zoom-on-focus for form controls under 16px */
   -webkit-text-size-adjust: 100%;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+.olar-shell {
+  background: var(--paper);
+  color: var(--ink);
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+[data-theme="premium"].olar-shell {
+  background: linear-gradient(180deg, #ffffff 0%, #f0f9ff 50%, #e0f2fe55 100%);
+}
+
+.olar-card {
+  background: #ffffff;
+  border: 1px solid #e0f2fe;
+  border-radius: var(--radius-card);
+  box-shadow: 0 10px 28px rgba(148, 163, 184, 0.35);
+}
+
+[data-theme="minimal"] .olar-card {
+  border-color: #e0f2fe;
+}
+
+[data-theme="premium"] .olar-card {
+  border-color: #e0f2fe;
+}
+
+.olar-page {
+  width: 100%;
+  max-width: 72rem;
+  margin-inline: auto;
+  padding: 2rem 1.5rem;
+}
+
+.olar-page-quick {
+  width: 100%;
+  max-width: 56rem;
+  margin-inline: auto;
+  padding: 2rem 1.5rem;
+}
+
+/* Primary crisp azure CTA — #0284C7 / hover #0369A1 */
+.olar-cta {
+  background-color: var(--accent);
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: var(--shadow-cta);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.olar-cta:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+}
+
+.olar-cta:disabled {
+  opacity: 0.45;
+}
+
+.olar-focus:focus,
+.olar-focus:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.olar-active-ring {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.olar-primary-btn {
+  background-color: var(--accent);
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.2);
+}
+
+.olar-primary-btn:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+}
+
+.olar-heading {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.olar-body {
+  color: #1e293b;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.olar-cloud {
+  background: #ffffff;
+  border: 1px solid #e0f2fe;
+  box-shadow: 0 10px 28px rgba(148, 163, 184, 0.35);
+}
+
+.olar-btn {
+  border-radius: var(--radius-btn);
+}
+
+.olar-input {
+  border-radius: var(--radius-input);
+}
+
+.olar-icon-wrap {
+  border-radius: var(--radius-icon);
 }
 
 .safe-bottom {
@@ -120,6 +267,22 @@ body {
   color: var(--accent);
 }
 
+@keyframes mic-recording-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(220 38 38 / 45%);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgb(220 38 38 / 0%);
+    transform: scale(1.04);
+  }
+}
+
+.mic-recording-active {
+  animation: mic-recording-pulse 1.2s ease-in-out infinite;
+}
+
 .status-dot {
   animation: pulse-dot 1.2s ease-in-out infinite;
 }
@@ -148,9 +311,34 @@ body {
   background: linear-gradient(
     90deg,
     var(--paper-deep) 0%,
-    #f4efe6 45%,
+    #f1f5f9 45%,
     var(--paper-deep) 100%
   );
   background-size: 200% 100%;
   animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(50%);
+  }
+}
+
+.ticker-track {
+  animation: ticker-scroll 40s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track {
+    animation: none;
+  }
+}
+
+button,
+[role="button"] {
+  touch-action: manipulation;
+  font-size: 1rem;
 }

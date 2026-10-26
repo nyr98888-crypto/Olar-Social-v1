@@ -779,7 +779,10 @@ export function YonaWorkspace({
     const tags = activePost.hashtags
       .map((t) => (t.startsWith("#") ? t : `#${t}`))
       .join(" ");
-    const text = `${activePost.headline}\n\n${activePost.body}\n\n${tags}`;
+    const cta = activePost.call_to_action
+      ? `\n\n${activePost.call_to_action}`
+      : "";
+    const text = `${activePost.headline}\n\n${activePost.body}${cta}\n\n${tags}`;
     await navigator.clipboard.writeText(text);
     setCopyDone(true);
     setTimeout(() => setCopyDone(false), 1600);

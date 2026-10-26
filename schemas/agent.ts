@@ -1,10 +1,65 @@
 import { z } from "zod";
 
+/**
+ * Validated campaign post shape (pipeline + UI).
+ * postText = social_post.body; suggestedImagePrompt = image_task.prompt (English).
+ */
+export const GeneratedPostResponseSchema = z.object({
+  postText: z
+    .string()
+    .min(1)
+    .describe("Hebrew post body — grounded facts only; no invented prices"),
+  headline: z.string().min(1).describe("Hebrew headline — grounded only"),
+  suggestedImagePrompt: z
+    .string()
+    .min(1)
+    .describe("English Flux prompt; no text-in-image; never Hebrew"),
+  callToAction: z
+    .string()
+    .min(1)
+    .describe(
+      "Hebrew CTA — neutral WhatsApp line unless user gave an explicit price"
+    ),
+  hasExplicitPrice: z
+    .boolean()
+    .describe(
+      "true ONLY when the user explicitly provided a numeric price in their input"
+    ),
+});
+
+export type GeneratedPostResponse = z.infer<typeof GeneratedPostResponseSchema>;
+
+export const SocialPostSchema = z.object({
+  headline: z
+    .string()
+    .describe(
+      "כותרת בעברית — רק עובדות מ-user message / brand / vision / 6 תורות אחרונים"
+    ),
+  body: z
+    .string()
+    .describe(
+      "גוף פוסט בעברית עם CTA — אסור להמציא מוצרים/מחירים/מבצעים/מיקומים שלא סופקו"
+    ),
+  hashtags: z
+    .array(z.string())
+    .describe("האשטגים רלוונטיים למותג/נושא שסופקו בלבד"),
+  call_to_action: z
+    .string()
+    .optional()
+    .describe("Hebrew CTA line (aligned with GeneratedPostResponse.callToAction)"),
+  has_explicit_price: z
+    .boolean()
+    .optional()
+    .describe("true only when user input contained that price"),
+});
+
+export type SocialPostFields = z.infer<typeof SocialPostSchema>;
+
 export const AgentOutputSchema = z.object({
   chat_reply: z
     .string()
     .describe(
-      "תשובת שיחה טבעית בעברית מיונה בלבד — בלי פרומפטים ובלי המצאת עובדות"
+      "תשובת שיחה טבעית בעברית מיונה בגוף ראשון נקבה בלבד (אני מנהלת/הכנתי/יצרתי) — בלי פרומפטים ובלי המצאת עובדות"
     ),
   // Spec core: chit_chat | campaign_request | refinement (+ missing_info)
   intent: z.enum([
@@ -13,43 +68,72 @@ export const AgentOutputSchema = z.object({
     "refinement",
     "missing_info",
   ]),
-  social_post: z
-    .object({
-      headline: z
-        .string()
-        .describe(
-          "כותרת בעברית — רק עובדות מ-user message / brand / vision / 6 תורות אחרונים"
-        ),
-      body: z
-        .string()
-        .describe(
-          "גוף פוסט בעברית עם CTA — אסור להמציא מוצרים/מחירים/מבצעים/מיקומים שלא סופקו"
-        ),
-      hashtags: z
-        .array(z.string())
-        .describe("האשטגים רלוונטיים למותג/נושא שסופקו בלבד"),
-    })
-    .nullable()
-    .describe(
-      "null ב-chit_chat או missing_info; מולא רק כשיש מספיק עובדות אמיתיות לקמפיין"
-    ),
+  social_post: SocialPostSchema.nullable().describe(
+    "null ב-chit_chat או missing_info; מולא רק כשיש מספיק עובדות אמיתיות לקמפיין"
+  ),
   image_task: z.object({
     generate_image: z
       .boolean()
       .describe(
-        "true רק בבקשת קמפיין/תמונה מפורשת ועם grounding מספיק; false ב-chit_chat/missing_info"
+        "MUST be true when the user approves/asks to create the post+image (e.g. קדימה/תרימי את הפוסט והתמונה) or clearly requests a campaign visual — then also provide English prompt; false only for chit_chat/missing_info"
       ),
     prompt: z
       .string()
       .optional()
       .describe(
-        "English-only Flux prompt grounded in user+brand+vision; never garage/workshop/מוסך stock scenes"
+        "Required English-only Flux prompt whenever generate_image=true; grounded in user+brand+Brand DNA+vision — never Hebrew, never garage/workshop stock scenes"
       ),
     aspect_ratio: z.enum(["1:1", "4:5", "16:9"]).default("1:1"),
   }),
 });
 
 export type AgentOutput = z.infer<typeof AgentOutputSchema>;
+
+/** Map AgentOutput campaign fields → GeneratedPostResponse (for pipeline). */
+export function agentOutputToGeneratedPost(
+  output: AgentOutput
+): GeneratedPostResponse | null {
+  const post = output.social_post;
+  if (!post) return null;
+  const prompt =
+    output.image_task.prompt?.trim() ||
+    "Authentic professional commercial photography for a local Israeli business, clean lighting, no text overlay";
+  const parsed = GeneratedPostResponseSchema.safeParse({
+    postText: post.body,
+    headline: post.headline,
+    suggestedImagePrompt: prompt,
+    callToAction:
+      post.call_to_action?.trim() ||
+      "לתיאום והצעת מחיר בוואטסאפ",
+    hasExplicitPrice: post.has_explicit_price ?? false,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/** Apply validated GeneratedPostResponse back onto AgentOutput.social_post + image prompt. */
+export function applyGeneratedPostToAgent(
+  output: AgentOutput,
+  post: GeneratedPostResponse,
+  hashtags?: string[]
+): AgentOutput {
+  const tags =
+    hashtags ??
+    output.social_post?.hashtags ??
+    ["#עסקמקומי"];
+  output.social_post = {
+    headline: post.headline,
+    body: post.postText,
+    hashtags: tags,
+    call_to_action: post.callToAction,
+    has_explicit_price: post.hasExplicitPrice,
+  };
+  if (output.image_task.generate_image) {
+    output.image_task.prompt = post.suggestedImagePrompt;
+  } else if (!output.image_task.prompt?.trim()) {
+    output.image_task.prompt = post.suggestedImagePrompt;
+  }
+  return output;
+}
 
 export const BrandGuidelinesSchema = z.object({
   brand_name: z.string().optional(),

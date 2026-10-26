@@ -102,6 +102,11 @@ export function SocialPreview({
               <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-ink-soft">
                 {post.body}
               </p>
+              {post.call_to_action ? (
+                <p className="break-words text-sm font-medium text-ink">
+                  {post.call_to_action}
+                </p>
+              ) : null}
               <p className="break-words text-sm text-accent">
                 {post.hashtags
                   .map((t) => (t.startsWith("#") ? t : `#${t}`))

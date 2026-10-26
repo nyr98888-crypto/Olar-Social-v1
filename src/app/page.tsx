@@ -1,22 +1,6 @@
-import { redirect } from "next/navigation";
-import { getAppSession } from "@/lib/auth/session";
-import { YonaWorkspace } from "@/components/YonaWorkspace";
+import { OlarApp } from "@/components/olar/OlarApp";
 
-export default async function HomePage() {
-  const session = await getAppSession();
-
-  if (!session) {
-    redirect("/login");
-  }
-
-  return (
-    <YonaWorkspace
-      guestMode={session.mode === "guest"}
-      user={{
-        email: session.user.email,
-        name: session.user.name,
-        avatarUrl: session.user.avatarUrl,
-      }}
-    />
-  );
+/** Prototype entry — permanent Guest Mode, no auth gate. */
+export default function HomePage() {
+  return <OlarApp />;
 }

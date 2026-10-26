@@ -1,7 +1,11 @@
 export interface SocialPost {
   headline: string;
+  /** Post body (= GeneratedPostResponse.postText) */
   body: string;
   hashtags: string[];
+  /** Hebrew CTA (= GeneratedPostResponse.callToAction) */
+  call_to_action?: string;
+  has_explicit_price?: boolean;
 }
 
 export interface UiMessage {

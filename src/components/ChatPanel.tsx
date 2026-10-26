@@ -84,8 +84,9 @@ export function ChatPanel({
       <div className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto overscroll-contain px-4 py-3 sm:px-5 sm:py-4">
         {messages.length === 0 && (
           <div className="animate-rise rounded-2xl bg-paper-deep/60 px-4 py-5 text-sm leading-relaxed text-ink-soft break-words">
-            היי, אני יונה. ספרי לי על המותג או בקשי קמפיין — ואבנה פוסט + ויז&apos;ואל
-            חי בצד. אפשר גם להעלות עד 2 תמונות רפרנס, או ללחוץ על המיקרופון ולדבר.
+            היי, אני יונה — מנהלת הסושיאל שלך. ספרי לי על המותג או בקשי קמפיין,
+            ואכין לך פוסט + ויז&apos;ואל חי בצד. אפשר גם להעלות עד 2 תמונות רפרנס,
+            או ללחוץ על המיקרופון ולדבר.
           </div>
         )}
         {messages.map((m) => {

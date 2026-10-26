@@ -4,11 +4,36 @@ import type { ChatTurn } from "../types";
 import { fetchSignal, withTimeout } from "../with-timeout";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-/** Current Haiku on OpenRouter (claude-3.5-haiku retired — 404). */
-const PRIMARY_MODEL = "anthropic/claude-haiku-5.5";
-const SECONDARY_MODEL = "openai/gpt-4o-mini";
-/** Per-model hard cap — fail over fast instead of hanging the route. */
-const REQUEST_TIMEOUT_MS = 22_000;
+
+/**
+ * Ranked OpenRouter models (hybrid):
+ * 1) cursorrules PRIMARY — haiku-5.5 (claude-3.5-haiku is retired 404)
+ * 2) user priority — Sonnet for marketing Hebrew
+ * 3) cursorrules OpenRouter fallback — gpt-4o-mini
+ * 4–5) user priorities inside OpenRouter (client-side after models[] batch)
+ *
+ * OpenRouter API allows at most 3 entries in `models` per request —
+ * we send the top 3 via models[], then sequential-retry 4–5 if needed.
+ * Prefer this list over openrouter/auto.
+ */
+export const OPENROUTER_MODELS = [
+  "anthropic/claude-haiku-5.5",
+  "anthropic/claude-3.5-sonnet",
+  "openai/gpt-4o-mini",
+  "meta-llama/llama-3.3-70b-instruct",
+  "google/gemini-2.0-flash-exp:free",
+] as const;
+
+/** Max length OpenRouter accepts for the `models` array (primary + fallbacks). */
+export const OPENROUTER_MODELS_BATCH_SIZE = 3;
+
+export type OpenRouterModelId = (typeof OPENROUTER_MODELS)[number];
+
+const PRIMARY_MODEL = OPENROUTER_MODELS[0];
+const SECONDARY_MODEL = OPENROUTER_MODELS[2]; // gpt-4o-mini (cursorrules fallback)
+
+/** Per-request hard cap — fail over fast instead of hanging the route. */
+const REQUEST_TIMEOUT_MS = 28_000;
 
 function extractJson(text: string): unknown {
   const trimmed = text.trim();
@@ -28,11 +53,96 @@ function isHaiku55Family(model: string): boolean {
   );
 }
 
-async function callOpenRouter(
+function openRouterHeaders(apiKey: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "HTTP-Referer":
+      process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+    "X-Title": "Yona Social Agent",
+  };
+}
+
+function isUnknownModelError(status: number, body: string): boolean {
+  return (
+    status === 400 ||
+    status === 404 ||
+    /not found|unknown model|invalid model|no endpoints/i.test(body)
+  );
+}
+
+type OpenRouterChatResult = {
+  output: AgentOutput;
+  model: string;
+};
+
+/**
+ * Single request with OpenRouter `models` array for automatic in-request fallback.
+ * Skips Haiku-only `reasoning` so fallback models stay compatible.
+ */
+async function callOpenRouterModelsArray(
+  system: string,
+  messages: ChatTurn[]
+): Promise<OpenRouterChatResult> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY is missing");
+
+  // API hard-cap: models[] ≤ 3. Top 3 go in one request; rest are client sequential.
+  const batch = OPENROUTER_MODELS.slice(0, OPENROUTER_MODELS_BATCH_SIZE);
+  const payload: Record<string, unknown> = {
+    model: batch[0],
+    models: batch.slice(1),
+    temperature: 0.7,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: system },
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
+    ],
+  };
+
+  const res = await withTimeout(
+    fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: openRouterHeaders(apiKey),
+      body: JSON.stringify(payload),
+      signal: fetchSignal(REQUEST_TIMEOUT_MS),
+    }),
+    REQUEST_TIMEOUT_MS + 2_000,
+    "OpenRouter models[]"
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    const err = new Error(`OpenRouter ${res.status}: ${body}`) as Error & {
+      status?: number;
+      body?: string;
+    };
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
+
+  const data = (await res.json()) as {
+    model?: string;
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error("OpenRouter: empty content");
+
+  const usedModel = data.model?.trim() || batch[0];
+  console.log("[openrouter] models[] OK", { usedModel, batch });
+  return {
+    output: AgentOutputSchema.parse(extractJson(content)),
+    model: usedModel,
+  };
+}
+
+/** Client-side sequential retry when models[] is rejected or fails entirely. */
+async function callOpenRouterSingle(
   model: string,
   system: string,
   messages: ChatTurn[]
-): Promise<AgentOutput> {
+): Promise<OpenRouterChatResult> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is missing");
 
@@ -45,8 +155,6 @@ async function callOpenRouter(
     ],
   };
 
-  // Haiku 5.5: adaptive thinking on by default — keep effort low for chat latency.
-  // Prefer not sending temperature (removed in 5.5 migration guidance).
   if (isHaiku55Family(model)) {
     payload.reasoning = { effort: "low" };
   } else {
@@ -56,13 +164,7 @@ async function callOpenRouter(
   const res = await withTimeout(
     fetch(OPENROUTER_URL, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer":
-          process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-        "X-Title": "Yona Social Agent",
-      },
+      headers: openRouterHeaders(apiKey),
       body: JSON.stringify(payload),
       signal: fetchSignal(REQUEST_TIMEOUT_MS),
     }),
@@ -74,46 +176,71 @@ async function callOpenRouter(
     const body = await res.text();
     const err = new Error(`OpenRouter ${res.status}: ${body}`) as Error & {
       status?: number;
+      body?: string;
     };
     err.status = res.status;
+    err.body = body;
     throw err;
   }
 
   const data = (await res.json()) as {
+    model?: string;
     choices?: Array<{ message?: { content?: string } }>;
   };
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error("OpenRouter: empty content");
 
-  return AgentOutputSchema.parse(extractJson(content));
+  return {
+    output: AgentOutputSchema.parse(extractJson(content)),
+    model: data.model?.trim() || model,
+  };
 }
 
+/**
+ * Structured JSON via OpenRouter ranked fallbacks.
+ * 1) models[] batch (top 3)
+ * 2) client sequential for remaining ranked IDs (and full list if batch failed)
+ */
 export async function generateWithOpenRouter(
   system: string,
   messages: ChatTurn[]
 ): Promise<{ output: AgentOutput; model: string }> {
   try {
-    const output = await callOpenRouter(PRIMARY_MODEL, system, messages);
-    return { output, model: PRIMARY_MODEL };
-  } catch (primaryErr) {
-    const status = (primaryErr as { status?: number }).status;
+    return await callOpenRouterModelsArray(system, messages);
+  } catch (arrErr) {
+    const status = (arrErr as { status?: number }).status;
+    const body = (arrErr as { body?: string }).body ?? "";
     console.warn(
-      "[openrouter] primary failed → secondary",
-      status ??
-        (primaryErr instanceof Error ? primaryErr.message : primaryErr)
+      "[openrouter] models[] batch failed → sequential client fallback",
+      status ?? (arrErr instanceof Error ? arrErr.message : arrErr),
+      isUnknownModelError(status ?? 0, body) ? "(unknown model IDs)" : ""
     );
+  }
+
+  // Prefer tail models first if batch already exhausted top-3, else full list
+  let lastErr: unknown;
+  for (const model of OPENROUTER_MODELS) {
     try {
-      const output = await callOpenRouter(SECONDARY_MODEL, system, messages);
-      return { output, model: SECONDARY_MODEL };
-    } catch (secondaryErr) {
+      const result = await callOpenRouterSingle(model, system, messages);
+      console.log("[openrouter] sequential OK", { model: result.model });
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const st = (err as { status?: number }).status ?? 0;
+      const b = (err as { body?: string }).body ?? "";
+      if (isUnknownModelError(st, b)) {
+        console.warn(`[openrouter] skip unknown/unavailable model: ${model}`);
+        continue;
+      }
       console.warn(
-        "[openrouter] secondary failed",
-        secondaryErr instanceof Error ? secondaryErr.message : secondaryErr
+        `[openrouter] ${model} failed → next`,
+        st || (err instanceof Error ? err.message : err)
       );
-      // Prefer the more recent / informative error for upstream failover
-      throw secondaryErr;
     }
   }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("OpenRouter: all ranked models failed");
 }
 
 export type OpenRouterTokenCallback = (delta: string) => void;
@@ -149,13 +276,7 @@ async function streamOpenRouterModel(
   const res = await withTimeout(
     fetch(OPENROUTER_URL, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer":
-          process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-        "X-Title": "Yona Social Agent",
-      },
+      headers: openRouterHeaders(apiKey),
       body: JSON.stringify(payload),
       signal: fetchSignal(STREAM_TIMEOUT_MS),
     }),
@@ -167,8 +288,10 @@ async function streamOpenRouterModel(
     const body = await res.text();
     const err = new Error(`OpenRouter ${res.status}: ${body}`) as Error & {
       status?: number;
+      body?: string;
     };
     err.status = res.status;
+    err.body = body;
     throw err;
   }
 
@@ -180,13 +303,14 @@ async function streamOpenRouterModel(
   let rawJson = "";
   let lineBuf = "";
 
-  const consumeDataPayload = (payload: string) => {
-    if (!payload || payload === "[DONE]") return;
+  const consumeDataPayload = (payloadStr: string) => {
+    if (!payloadStr || payloadStr === "[DONE]") return;
     let parsed: {
+      model?: string;
       choices?: Array<{ delta?: { content?: string } }>;
     };
     try {
-      parsed = JSON.parse(payload);
+      parsed = JSON.parse(payloadStr);
     } catch {
       return;
     }
@@ -222,43 +346,46 @@ async function streamOpenRouterModel(
 }
 
 /**
- * Phase A+B: stream structured JSON from OpenRouter; emit chat_reply tokens live.
- * On primary failure → secondary. Caller handles Groq/Gemini failover if both fail.
+ * Phase A+B: stream structured JSON from OpenRouter ranked models.
+ * Walks OPENROUTER_MODELS; skips unknown IDs. Caller handles external failover.
  */
 export async function streamWithOpenRouter(
   system: string,
   messages: ChatTurn[],
   onToken?: OpenRouterTokenCallback
 ): Promise<{ output: AgentOutput; model: string }> {
-  try {
-    return await streamOpenRouterModel(
-      PRIMARY_MODEL,
-      system,
-      messages,
-      onToken
-    );
-  } catch (primaryErr) {
-    const status = (primaryErr as { status?: number }).status;
-    console.warn(
-      "[openrouter] stream primary failed → secondary",
-      status ??
-        (primaryErr instanceof Error ? primaryErr.message : primaryErr)
-    );
+  let lastErr: unknown;
+  for (const model of OPENROUTER_MODELS) {
     try {
-      return await streamOpenRouterModel(
-        SECONDARY_MODEL,
+      const result = await streamOpenRouterModel(
+        model,
         system,
         messages,
         onToken
       );
-    } catch (secondaryErr) {
+      console.log("[openrouter] stream OK", { model: result.model });
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const status = (err as { status?: number }).status ?? 0;
+      const body = (err as { body?: string }).body ?? "";
+      if (isUnknownModelError(status, body)) {
+        console.warn(`[openrouter] stream skip unknown model: ${model}`);
+        continue;
+      }
       console.warn(
-        "[openrouter] stream secondary failed",
-        secondaryErr instanceof Error ? secondaryErr.message : secondaryErr
+        `[openrouter] stream ${model} failed → next`,
+        status || (err instanceof Error ? err.message : err)
       );
-      throw secondaryErr;
     }
   }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("OpenRouter stream: all ranked models failed");
 }
 
-export { PRIMARY_MODEL as OPENROUTER_PRIMARY_MODEL, SECONDARY_MODEL };
+export {
+  PRIMARY_MODEL as OPENROUTER_PRIMARY_MODEL,
+  SECONDARY_MODEL,
+  OPENROUTER_URL,
+};

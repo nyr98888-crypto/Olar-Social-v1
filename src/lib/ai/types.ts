@@ -65,8 +65,11 @@ export function promptsAreTooSimilar(a: string, b: string): boolean {
   return normalizePrompt(a) === normalizePrompt(b);
 }
 
-/** Stale locked scenes that must never leak into FAL prompts. */
-const LOCKED_SCENE_PATTERNS: RegExp[] = [
+/**
+ * Cross-niche garage/workshop stock scenes — blocked only when the business
+ * is NOT a garage (on-niche garage visuals are allowed).
+ */
+const LOCKED_GARAGE_SCENE_PATTERNS: RegExp[] = [
   /\bgarage\b/i,
   /\bmechanic\b/i,
   /\bauto\s*repair\b/i,
@@ -77,8 +80,28 @@ const LOCKED_SCENE_PATTERNS: RegExp[] = [
   /\bמכונאי\b/,
 ];
 
-export function hasLockedSceneLeak(prompt: string): boolean {
-  return LOCKED_SCENE_PATTERNS.some((re) => re.test(prompt));
+function nicheLooksLikeGarage(businessType?: string | null): boolean {
+  const t = (businessType || "").toLowerCase();
+  return (
+    t.includes("garage") ||
+    t.includes("auto") ||
+    t.includes("mechanic") ||
+    t.includes("מוסך") ||
+    t.includes("רכב") ||
+    t.includes("מכונאי")
+  );
+}
+
+/**
+ * True when a garage/workshop scene leaked into a non-garage brand prompt.
+ * Pass businessType from Brand DNA so legitimate garage niches are not blocked.
+ */
+export function hasLockedSceneLeak(
+  prompt: string,
+  businessType?: string | null
+): boolean {
+  if (nicheLooksLikeGarage(businessType)) return false;
+  return LOCKED_GARAGE_SCENE_PATTERNS.some((re) => re.test(prompt));
 }
 
 /**
