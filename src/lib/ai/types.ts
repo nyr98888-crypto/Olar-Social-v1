@@ -3,6 +3,7 @@ import type {
   BrandDna,
   BrandGuidelines,
 } from "../../../schemas/agent";
+import type { PartnerMemory } from "./partner-memory";
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -23,6 +24,8 @@ export interface AgentRequest {
   brandGuidelines: BrandGuidelines | null;
   /** Niche lock — authoritative for visuals (from profile ± conversation). */
   brandDna?: BrandDna | null;
+  /** Personal Marketing Partner memory (name, niche, writing style). */
+  partnerMemory?: PartnerMemory | null;
   referenceImages?: ReferenceImage[];
   /** Anti-lock comparison only — never inject into chat history as a template. */
   previousImagePrompt?: string | null;

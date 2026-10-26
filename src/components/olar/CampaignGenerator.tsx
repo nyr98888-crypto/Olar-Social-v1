@@ -10,12 +10,14 @@ import {
 } from "@/lib/olar/campaign-posts";
 import { useAiProgressMessages } from "@/hooks/useAiProgressMessages";
 import { BrandGlyph } from "@/components/olar/NetworkBrand";
-import { NETWORKS } from "@/lib/olar/mock-data";
 import { Copy, Sparkles } from "lucide-react";
 
-const NET_TAGS: { id: SocialNetwork; label: string }[] = NETWORKS.filter(
-  (n) => n.id === "facebook" || n.id === "instagram" || n.id === "google"
-).map((n) => ({ id: n.id, label: n.label }));
+/** Preview shells only — switching never regenerates / clears image_url */
+const NET_TAGS: { id: SocialNetwork; label: string }[] = [
+  { id: "facebook", label: "פייסבוק" },
+  { id: "instagram", label: "אינסטגרם" },
+  { id: "whatsapp", label: "וואטסאפ" },
+];
 
 export function CampaignGenerator({
   initialTopic = "",
@@ -127,7 +129,13 @@ export function CampaignGenerator({
             }`}
           >
             <BrandGlyph
-              id={n.id === "google" ? "google" : n.id}
+              id={
+                n.id === "whatsapp"
+                  ? "whatsapp"
+                  : n.id === "facebook"
+                    ? "facebook"
+                    : "instagram"
+              }
               size={16}
             />
             {n.label}
@@ -199,7 +207,13 @@ export function CampaignGenerator({
                 >
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-800">
                     <BrandGlyph
-                      id={tagNet === "google" ? "google" : tagNet}
+                      id={
+                        tagNet === "whatsapp"
+                          ? "whatsapp"
+                          : tagNet === "facebook"
+                            ? "facebook"
+                            : "instagram"
+                      }
                       size={12}
                     />
                     {tagLabel}

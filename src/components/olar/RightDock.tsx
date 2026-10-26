@@ -1,7 +1,7 @@
 "use client";
 
+import Image from "next/image";
 import type { OlarView } from "@/lib/olar/types";
-import { BUSINESS_NAME } from "@/lib/olar/mock-data";
 import { C } from "@/lib/olar/ui-copy";
 import {
   Bot,
@@ -20,17 +20,16 @@ const NAV: {
   id: OlarView;
   label: string;
   icon: typeof LayoutDashboard;
-  soon?: boolean;
 }[] = [
   { id: "yona", label: C.navAgentSmart || C.yonaTitle, icon: Bot },
   { id: "studio", label: C.navCampaigns || C.studioTitle, icon: Clapperboard },
   { id: "mypage", label: C.navBioPage || C.myPageTitle, icon: Globe },
   { id: "home", label: C.homeTitle, icon: LayoutDashboard },
   { id: "settings", label: C.networksTitle, icon: Settings2 },
-  { id: "leads", label: C.peopleTitle, icon: MessageSquare, soon: true },
-  { id: "calendar", label: C.calendarTitle, icon: CalendarDays, soon: true },
-  { id: "reviews", label: C.reviewsTitle, icon: Star, soon: true },
-  { id: "analytics", label: C.whatWorked, icon: Eye, soon: true },
+  { id: "leads", label: C.peopleTitle, icon: MessageSquare },
+  { id: "calendar", label: C.calendarTitle, icon: CalendarDays },
+  { id: "reviews", label: C.reviewsTitle, icon: Star },
+  { id: "analytics", label: C.whatWorked, icon: Eye },
 ];
 
 /**
@@ -78,20 +77,29 @@ export function RightDock({
         aria-label={C.menuLabel}
         aria-hidden={!open}
       >
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <div className="text-right">
-            <p
-              className="text-xl font-semibold text-slate-900"
-              style={{ fontFamily: "var(--font-display)" }}
-            >
-              {BUSINESS_NAME}
-            </p>
-            <p className="text-base text-slate-800">{C.menuAll}</p>
-          </div>
+        <div className="relative flex items-center justify-between bg-[#0B0F19] px-5 py-4">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-gradient-to-r from-cyan-400 via-indigo-500 to-purple-500" aria-hidden="true" />
+          <button
+            type="button"
+            className="inline-flex min-w-0 items-center px-1 py-1.5"
+            onClick={() => {
+              onNavigate("home");
+              onOpenChange(false);
+            }}
+            aria-label="One Loop Social — בית"
+          >
+            <Image
+              src="/one-loop-logo.png?v=2"
+              alt="One Loop Social"
+              width={215}
+              height={120}
+              className="h-9 w-auto object-contain"
+            />
+          </button>
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="flex h-12 w-12 items-center justify-center rounded-xl border border-line text-slate-900"
+            className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 text-white/80 hover:bg-white/10 hover:text-white"
             aria-label={C.close}
           >
             <X className="h-5 w-5" />
@@ -108,26 +116,17 @@ export function RightDock({
                   <button
                     type="button"
                     onClick={() => {
-                      if (item.soon) return;
                       onNavigate(item.id);
                       onOpenChange(false);
                     }}
-                    disabled={item.soon}
                     className={`olar-btn flex min-h-14 w-full items-center gap-3 px-4 text-right text-base font-medium ${
-                      item.soon
-                        ? "cursor-not-allowed opacity-60 text-slate-600"
-                        : isActive
-                          ? "bg-accent text-white"
-                          : "text-slate-900 hover:bg-paper-deep/50"
+                      isActive
+                        ? "bg-accent text-white"
+                        : "text-slate-900 hover:bg-paper-deep/50"
                     }`}
                   >
                     <Icon className="h-5 w-5 shrink-0" />
                     <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                    {item.soon ? (
-                      <span className="shrink-0 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-700">
-                        {C.comingSoon}
-                      </span>
-                    ) : null}
                   </button>
                 </li>
               );

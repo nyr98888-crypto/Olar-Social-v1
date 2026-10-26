@@ -29,6 +29,31 @@ export const GeneratedPostResponseSchema = z.object({
 
 export type GeneratedPostResponse = z.infer<typeof GeneratedPostResponseSchema>;
 
+/** Single-platform adapted post (text + optional hashtags + CTA). */
+export const PlatformPostSchema = z.object({
+  text: z.string().describe("Platform-adapted post text in Hebrew"),
+  hashtags: z
+    .array(z.string())
+    .optional()
+    .describe("Hashtags (mainly relevant for Instagram)"),
+  cta: z
+    .string()
+    .optional()
+    .describe("Platform-specific CTA in Hebrew"),
+});
+
+export type PlatformPost = z.infer<typeof PlatformPostSchema>;
+
+/** Multi-platform adapted versions of a social post. */
+export const PlatformPostsSchema = z.object({
+  facebook: PlatformPostSchema.optional(),
+  instagram: PlatformPostSchema.optional(),
+  whatsapp: PlatformPostSchema.optional(),
+  google_business: PlatformPostSchema.optional(),
+});
+
+export type PlatformPosts = z.infer<typeof PlatformPostsSchema>;
+
 export const SocialPostSchema = z.object({
   headline: z
     .string()
@@ -51,6 +76,11 @@ export const SocialPostSchema = z.object({
     .boolean()
     .optional()
     .describe("true only when user input contained that price"),
+  platforms: PlatformPostsSchema.optional()
+    .nullable()
+    .describe(
+      "Platform-adapted post versions — optional; frontend derives from classic fields when absent"
+    ),
 });
 
 export type SocialPostFields = z.infer<typeof SocialPostSchema>;
@@ -210,6 +240,18 @@ export function isBrandDnaComplete(
   return Boolean(
     dna?.business_type?.trim() && dna?.allowed_visual_style?.trim()
   );
+}
+
+/** Derive platform-adapted posts from classic social_post fields (backward compat). */
+export function derivePlatformsFromPost(post: SocialPostFields): PlatformPosts {
+  const fullText = `${post.headline}\n\n${post.body}`;
+  const cta = post.call_to_action || "";
+  return {
+    facebook: { text: fullText, cta },
+    instagram: { text: fullText, hashtags: post.hashtags, cta },
+    whatsapp: { text: `${post.headline}\n${post.body}`, cta },
+    google_business: { text: fullText, cta },
+  };
 }
 
 /**

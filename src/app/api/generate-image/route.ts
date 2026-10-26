@@ -86,17 +86,25 @@ export async function POST(request: Request) {
         englishReady: true,
       });
 
+      const isPlaceholder =
+        !image.url ||
+        image.url.startsWith("data:image/svg") ||
+        image.url === IMAGE_PLACEHOLDER_DATA_URI;
+
       return NextResponse.json(
-        okPayload({
-          image: {
-            url: image.url,
-            seed: image.seed,
-            prompt: image.prompt,
+        okPayload(
+          {
+            image: {
+              url: image.url,
+              seed: image.seed,
+              prompt: image.prompt,
+            },
+            english_prompt: englishPrompt,
+            prompt_source: source,
+            category: translated.category,
           },
-          english_prompt: englishPrompt,
-          prompt_source: source,
-          category: translated.category,
-        })
+          isPlaceholder
+        )
       );
     } catch (err) {
       console.error(

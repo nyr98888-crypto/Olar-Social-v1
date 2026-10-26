@@ -6,11 +6,21 @@ import {
 } from "@/lib/guest-cookie";
 
 /**
- * Prototype mode: permanent Guest bypass.
- * No Supabase / Google checks — every visit gets a guest cookie and free access.
+ * Prototype mode: guest cookie for free access.
+ * OAuth callback MUST run — never redirect /auth/callback away (code exchange).
  */
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
+
+  // Google / Supabase OAuth return — exchange code, do not strip query
+  if (path.startsWith("/auth/callback")) {
+    return NextResponse.next({ request });
+  }
+
+  // Just-authenticated window: do not re-stamp guest over a fresh session
+  if (request.cookies.get("olar_oauth_just_done")?.value === "1") {
+    return NextResponse.next({ request });
+  }
 
   if (path.startsWith("/login") || path.startsWith("/auth")) {
     const url = request.nextUrl.clone();

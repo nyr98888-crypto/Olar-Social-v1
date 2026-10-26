@@ -1,14 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SocialNetwork } from "@/lib/olar/types";
 import { useResolvedMyPage } from "@/lib/olar/business-profile";
+import {
+  loadCurrentPost,
+  saveCurrentPost,
+  saveCurrentPostImage,
+  syncCurrentPostToServer,
+} from "@/lib/olar/current-post";
 import { useAiProgressMessages } from "@/hooks/useAiProgressMessages";
 import { C } from "@/lib/olar/ui-copy";
-import { NETWORKS } from "@/lib/olar/mock-data";
 import { CampaignGenerator } from "@/components/olar/CampaignGenerator";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
 import { BrandGlyph } from "@/components/olar/NetworkBrand";
+import type { CampaignPost } from "@/lib/olar/campaign-posts";
 import {
   ImagePlus,
   PanelsTopLeft,
@@ -29,9 +35,16 @@ const TABS: {
   { id: "logo", labelKey: "tabLogo" },
 ];
 
-const PREVIEW_NETWORKS = NETWORKS.filter(
-  (n) => n.id === "facebook" || n.id === "instagram" || n.id === "google"
-);
+/** Preview shells only — switching must never reset image_url */
+const PREVIEW_NETWORKS: {
+  id: SocialNetwork;
+  label: string;
+  glyph: "facebook" | "instagram" | "google" | "whatsapp";
+}[] = [
+  { id: "facebook", label: "פייסבוק", glyph: "facebook" },
+  { id: "instagram", label: "אינסטגרם", glyph: "instagram" },
+  { id: "whatsapp", label: "וואטסאפ", glyph: "whatsapp" },
+];
 
 export function StudioView() {
   const { page } = useResolvedMyPage();
@@ -59,9 +72,65 @@ export function StudioView() {
     generating || imageLoading
   );
 
+  // Hydrate from persisted current_business_post (never lose FAL URL on remount)
+  useEffect(() => {
+    const stored = loadCurrentPost();
+    if (stored?.image_url) setImageUrl(stored.image_url);
+    if (stored?.network) {
+      const n = stored.network as SocialNetwork;
+      if (n === "facebook" || n === "instagram" || n === "whatsapp") {
+        setPreviewNetwork(n);
+      }
+    }
+    if (stored && (stored.headline || stored.body)) {
+      setCampaignPreview({
+        headline: stored.headline,
+        body: stored.body,
+        hashtags: stored.hashtags,
+        call_to_action: stored.cta,
+      });
+    }
+  }, []);
+
   useEffect(() => {
     if (!bizName && page.businessName) setBizName(page.businessName);
   }, [page.businessName, bizName]);
+
+  const onActivePostChange = useCallback(
+    (p: CampaignPost | null) => {
+      if (!p) {
+        setCampaignPreview(null);
+        return;
+      }
+      const next = {
+        headline: p.title,
+        body: p.body,
+        call_to_action: p.cta,
+      };
+      setCampaignPreview((prev) => {
+        if (
+          prev &&
+          prev.headline === next.headline &&
+          prev.body === next.body &&
+          prev.call_to_action === next.call_to_action
+        ) {
+          return prev;
+        }
+        return next;
+      });
+      // Persist text; keep existing image_url
+      const saved = saveCurrentPost({
+        headline: p.title,
+        body: p.body,
+        cta: p.cta || "",
+        hashtags: loadCurrentPost()?.hashtags || page.firstPost?.hashtags || [],
+        offer: p.hook,
+        network: previewNetwork,
+      });
+      void syncCurrentPostToServer(saved);
+    },
+    [page.firstPost?.hashtags, previewNetwork]
+  );
 
   function onFace(files: FileList | null) {
     if (!files?.length) return;
@@ -72,8 +141,8 @@ export function StudioView() {
 
   async function generatePostImage() {
     setImageLoading(true);
-    setImageUrl(null);
     setSoftToast(null);
+    // Do NOT clear imageUrl — previous image stays until a real URL returns
     try {
       const res = await fetch("/api/generate-image", {
         method: "POST",
@@ -82,6 +151,7 @@ export function StudioView() {
           description:
             prompt.trim() ||
             `${page.businessName} ${page.tagline}`.trim() ||
+            campaignPreview?.headline ||
             "local business",
           businessName: bizName || page.businessName,
           niche: niche || page.tagline,
@@ -93,11 +163,33 @@ export function StudioView() {
       });
       const data = (await res.json().catch(() => ({}))) as {
         soft_message?: string;
-        image?: { url?: string };
+        fallback?: boolean;
+        image?: { url?: string; seed?: number; prompt?: string };
       };
-      if (data.image?.url) {
+      if (data.image?.url && !data.fallback) {
         setImageUrl(data.image.url);
         setResult(data.image.url);
+        const preview = campaignPreview || {
+          headline: bizName || page.businessName || C.myBiz,
+          body: prompt || page.tagline || page.description,
+          call_to_action: page.firstPost?.cta,
+        };
+        const saved = saveCurrentPost({
+          headline: preview.headline,
+          body: preview.body,
+          cta: preview.call_to_action || "",
+          hashtags: page.firstPost?.hashtags || [],
+          image_url: data.image.url,
+          image_seed: data.image.seed ?? null,
+          image_prompt: data.image.prompt ?? null,
+          network: previewNetwork,
+        });
+        saveCurrentPostImage({
+          image_url: data.image.url,
+          image_seed: data.image.seed ?? null,
+          image_prompt: data.image.prompt ?? null,
+        });
+        void syncCurrentPostToServer(saved);
       }
       setSoftToast(data.soft_message || C.aiSoftReady);
     } catch {
@@ -161,6 +253,7 @@ export function StudioView() {
     call_to_action: page.firstPost?.cta,
   };
 
+  // Prefer persisted FAL URL; face preview only for headshot shell when no FAL yet
   const previewImage =
     imageUrl ||
     (typeof result === "string" &&
@@ -170,6 +263,15 @@ export function StudioView() {
         ? face
         : null);
 
+  function selectPreviewNetwork(n: SocialNetwork) {
+    // UI shell only — never reset image_url
+    setPreviewNetwork(n);
+    const stored = loadCurrentPost();
+    if (stored) {
+      saveCurrentPost({ ...stored, network: n });
+    }
+  }
+
   const previewCard = (
     <div className="flex w-full flex-col gap-3">
       <div className="flex gap-2 overflow-x-auto pb-1">
@@ -177,14 +279,14 @@ export function StudioView() {
           <button
             key={n.id}
             type="button"
-            onClick={() => setPreviewNetwork(n.id)}
+            onClick={() => selectPreviewNetwork(n.id)}
             className={`inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl px-3 text-sm font-medium ${
               previewNetwork === n.id
                 ? "bg-slate-900 text-white"
                 : "border border-slate-300 bg-white text-slate-800"
             }`}
           >
-            <BrandGlyph id={n.id === "google" ? "google" : n.id} size={14} />
+            <BrandGlyph id={n.glyph} size={14} />
             {n.label}
           </button>
         ))}
@@ -201,11 +303,11 @@ export function StudioView() {
 
   return (
     <div
-      className="flex h-full min-h-0 w-full flex-col overflow-x-hidden"
+      className="flex h-full min-h-0 w-full flex-col overflow-hidden"
       dir="rtl"
     >
-      <div className="flex h-[calc(100vh-80px)] min-h-0 w-full flex-col gap-6 overflow-hidden lg:grid lg:grid-cols-12">
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:col-span-7 xl:col-span-8">
+      <div className="flex h-full min-h-0 w-full flex-col gap-6 overflow-hidden lg:flex-row">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden lg:flex-[1.2]">
           <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-28 lg:pb-8 animate-rise">
             <header className="text-right">
               <h1
@@ -228,6 +330,7 @@ export function StudioView() {
                     setTab(t.id);
                     setResult(null);
                     setLogoMark(null);
+                    // Keep imageUrl — tab switch must not wipe the FAL image
                   }}
                   className={`min-h-12 break-words rounded-xl text-base font-medium transition sm:min-h-14 ${
                     tab === t.id
@@ -246,18 +349,8 @@ export function StudioView() {
                   prompt || `${page.businessName} ${page.tagline}`.trim()
                 }
                 previewNetwork={previewNetwork}
-                onPreviewNetworkChange={setPreviewNetwork}
-                onActivePostChange={(p) =>
-                  setCampaignPreview(
-                    p
-                      ? {
-                          headline: p.title,
-                          body: p.body,
-                          call_to_action: p.cta,
-                        }
-                      : null
-                  )
-                }
+                onPreviewNetworkChange={selectPreviewNetwork}
+                onActivePostChange={onActivePostChange}
               />
             ) : null}
 
@@ -419,15 +512,14 @@ export function StudioView() {
               </div>
             )}
 
-            <div className="border-t border-slate-200 pt-4 lg:hidden">
-              {previewCard}
-            </div>
+            <div className="pt-2 lg:hidden">{previewCard}</div>
           </div>
         </section>
 
-        <aside className="hidden min-h-0 overflow-hidden lg:col-span-5 lg:block xl:col-span-4">
-          <div className="h-full overflow-y-auto overscroll-contain p-1">
-            <div className="sticky top-0">{previewCard}</div>
+        {/* Sticky Live Preview — single scroll on left; aside does not scroll */}
+        <aside className="hidden min-h-0 lg:flex lg:flex-[0.8] lg:flex-col">
+          <div className="flex h-full flex-col lg:max-h-[calc(100vh-120px)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4">
+            {previewCard}
           </div>
         </aside>
       </div>

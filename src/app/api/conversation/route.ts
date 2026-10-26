@@ -37,7 +37,7 @@ export async function GET() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("brand_dna")
+    .select("brand_dna, business_profile, full_name")
     .eq("id", userId)
     .maybeSingle();
 
@@ -46,6 +46,8 @@ export async function GET() {
       conversation: null,
       messages: [],
       brand_dna: parseBrandDnaPartial(profile?.brand_dna) ?? null,
+      business_profile: profile?.business_profile ?? null,
+      full_name: profile?.full_name ?? null,
     });
   }
 
@@ -65,6 +67,8 @@ export async function GET() {
       parseBrandDnaPartial(conversation.brand_dna) ??
       parseBrandDnaPartial(profile?.brand_dna) ??
       null,
+    business_profile: profile?.business_profile ?? null,
+    full_name: profile?.full_name ?? null,
   });
 }
 

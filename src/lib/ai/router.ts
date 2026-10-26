@@ -383,7 +383,8 @@ export async function runAgentPipeline(
     req.brandGuidelines,
     visionNotes,
     req.previousImagePrompt ?? null,
-    brandDna
+    brandDna,
+    req.partnerMemory ?? null
   );
 
   // Sliding window = last 6 messages only (no prior image prompts in chat)
@@ -545,7 +546,8 @@ export async function runAgentPipelineStream(
     req.brandGuidelines,
     visionNotes,
     req.previousImagePrompt ?? null,
-    brandDna
+    brandDna,
+    req.partnerMemory ?? null
   );
 
   const windowed = takeSlidingWindow(req.history);

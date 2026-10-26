@@ -16,8 +16,10 @@ console.log(
 );
 console.log(
   "brand",
-  m.includes("\u05d0\u05d5\u05dc\u05e8 \u05e1\u05d5\u05e9\u05d9\u05d0\u05dc"),
-  !m.includes("\u05e2\u05d5\u05dc\u05e8")
+  m.includes(
+    "\u05d5\u05d5\u05d0\u05df \u05dc\u05d5\u05e4 \u05e1\u05d5\u05e6\u05d9\u05d0\u05dc"
+  ),
+  !m.includes("\u05d0\u05d5\u05dc\u05e8 \u05e1\u05d5\u05e9\u05d9\u05d0\u05dc")
 );
 console.log(
   "header",

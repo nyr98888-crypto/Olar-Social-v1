@@ -9,7 +9,7 @@ import type {
   TickerItem,
 } from "./types";
 
-export const BUSINESS_NAME = "אולר סושיאל";
+export const BUSINESS_NAME = "One Loop Social";
 export const OWNER_NAME = "ניר";
 
 /** Direct links for asking reviews (demo) */
@@ -463,7 +463,7 @@ export const YONA_STARTER_MESSAGES = [
 export const DEMO_POST = {
   headline: "הגיע הזמן שיראו אתכם ברשת",
   body: "עסק שלא מפרסם — אנשים שוכחים.\nהנה משהו קצר ואמיתי מהשבוע שלנו.\n\nכתבו בוואטסאפ ונשמח לעזור.",
-  hashtags: ["#עסקמקומי", "#אולרסושיאל"],
+  hashtags: ["#עסקמקומי", "#OneLoopSocial"],
 };
 
 export const PLATFORM_COPY: Record<

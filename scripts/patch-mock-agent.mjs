@@ -83,12 +83,12 @@ if (!types.includes("publishTime")) {
 
 /* ---- layout description ---- */
 let layout = fs.readFileSync("src/app/layout.tsx", "utf8");
-const title = "אולר סושיאל — Olar Social";
+const title = "One Loop Social - Your Marketing Partner";
 const desc =
-  "אולר סושיאל — סוכן שיווק AI, סטודיו, יומן, לידים ואנליטיקה במקום אחד · olar.me";
+  "All-in-one social growth and content management for local businesses";
 layout = layout
-  .replace(/title:\s*"[^"]*"/, `title: ${J(title)}`)
-  .replace(/description:\s*"[^"]*"/, `description: ${J(desc)}`);
+  .replace(/title:\s*['"][^'"]*['"]/, `title: ${J(title)}`)
+  .replace(/description:\s*['"][^'"]*['"]/, `description: ${J(desc)}`);
 fs.writeFileSync("src/app/layout.tsx", layout, "utf8");
 
 console.log(

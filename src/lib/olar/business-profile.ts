@@ -262,7 +262,7 @@ export function buildProfileFromInput(raw: string): BusinessProfile {
       headline: niche.postHeadline,
       body,
       cta: niche.postCta,
-      hashtags: ["#עסקמקומי", "#אולרסושיאל", `#${businessName.replace(/\s+/g, "")}`],
+      hashtags: ["#עסקמקומי", "#OneLoopSocial", `#${businessName.replace(/\s+/g, "")}`],
     },
     rawInput: raw.trim(),
   };
@@ -304,6 +304,15 @@ export function clearOnboardingSession(): void {
     localStorage.removeItem(WORK_MODE_KEY);
     localStorage.removeItem("olar-yona-idea");
     localStorage.removeItem("olar-daily-freq");
+    localStorage.removeItem("olar-onboarding-pending");
+    localStorage.removeItem("olar-onboarding-profile-backup");
+    localStorage.removeItem("olar-onboarding-post-backup");
+    localStorage.removeItem("current_business_post");
+  } catch {
+    /* ignore */
+  }
+  try {
+    sessionStorage.removeItem("current_business_post");
   } catch {
     /* ignore */
   }

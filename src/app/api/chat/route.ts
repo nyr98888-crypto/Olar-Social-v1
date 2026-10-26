@@ -10,11 +10,17 @@ import {
   type ReferenceImage,
 } from "@/lib/ai/types";
 import {
+  expandBrandDnaDefaults,
   mergeBrandDna,
   parseBrandDnaPartial,
   type BrandDna,
   type BrandGuidelines,
 } from "../../../../schemas/agent";
+import {
+  brandGuidelinesFromBusinessProfile,
+  buildPartnerMemory,
+  type BusinessProfileLike,
+} from "@/lib/ai/partner-memory";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -26,6 +32,8 @@ interface ChatBody {
   /** Guest / client: Niche Lock DNA */
   brandDna?: BrandDna | null;
   brand_dna?: BrandDna | null;
+  /** Guest: local onboarding business snapshot for Partner Memory */
+  businessProfile?: BusinessProfileLike | null;
   /** Guest mode: client-held sliding window (no DB). */
   history?: ChatTurn[];
   /** Guest mode: last image prompt for anti-lock. */
@@ -34,6 +42,10 @@ interface ChatBody {
   imageBase64Array?: string[];
   /** Backward compat with earlier scaffold */
   referenceImages?: ReferenceImage[];
+  /** Active view/route context for contextual greetings (e.g. "home", "studio") */
+  routeContext?: string | null;
+  /** Hebrew route hint injected as system context */
+  routeHint?: string | null;
 }
 
 function withSoftFlags(
@@ -79,12 +91,34 @@ export async function POST(request: Request) {
           ? body.conversationId
           : `guest-${Date.now()}`;
 
+      const guestBp = body.businessProfile ?? null;
+      const guestBrand =
+        body.brandGuidelines ??
+        brandGuidelinesFromBusinessProfile(guestBp, null);
+      const partnerMemory = buildPartnerMemory({
+        fullName: null,
+        businessProfile: guestBp,
+        brandGuidelines: guestBrand,
+      });
+      const guestDna = mergeBrandDna(
+        guestBp?.niche
+          ? expandBrandDnaDefaults({ business_type: String(guestBp.niche) })
+          : null,
+        bodyDna
+      );
+
+      // Inject route context as a system-level hint prepended to user message
+      const routePrefix = body.routeHint?.trim()
+        ? `${body.routeHint.trim()}\n`
+        : "";
+
       // Defer FAL so mobile/Vercel get chat_reply fast; client follows up for image.
       const result = await runAgentPipeline({
-        userMessage: body.message.trim(),
+        userMessage: routePrefix + body.message.trim(),
         history,
-        brandGuidelines: body.brandGuidelines ?? null,
-        brandDna: mergeBrandDna(bodyDna, null),
+        brandGuidelines: guestBrand,
+        brandDna: guestDna,
+        partnerMemory,
         referenceImages:
           referenceImages.length > 0 ? referenceImages : undefined,
         previousImagePrompt: body.previousImagePrompt ?? null,
@@ -137,15 +171,22 @@ export async function POST(request: Request) {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("brand_dna")
+      .select("brand_dna, business_profile, full_name, email")
       .eq("id", userId)
       .maybeSingle();
 
-    const profileDna = parseBrandDnaPartial(profile?.brand_dna) ?? null;
+    const businessProfile = (profile?.business_profile ??
+      null) as BusinessProfileLike | null;
+    const profileDna =
+      parseBrandDnaPartial(profile?.brand_dna) ??
+      (businessProfile?.niche
+        ? expandBrandDnaDefaults({ business_type: businessProfile.niche })
+        : null);
 
     let conversationId = body.conversationId;
     let brandGuidelines: BrandGuidelines | null =
-      body.brandGuidelines ?? null;
+      body.brandGuidelines ??
+      brandGuidelinesFromBusinessProfile(businessProfile, null);
     let previousImagePrompt: string | null = null;
     let conversationDna = parseBrandDnaPartial(null);
 
@@ -194,6 +235,22 @@ export async function POST(request: Request) {
       bodyDna
     );
 
+    // Prefer body brand if provided; else merge profile business snapshot
+    if (body.brandGuidelines) {
+      brandGuidelines = body.brandGuidelines;
+    } else if (!brandGuidelines?.brand_name && businessProfile) {
+      brandGuidelines = brandGuidelinesFromBusinessProfile(
+        businessProfile,
+        brandGuidelines
+      );
+    }
+
+    const partnerMemory = buildPartnerMemory({
+      fullName: profile?.full_name ?? session.user.name,
+      businessProfile,
+      brandGuidelines,
+    });
+
     // Load chat text only — never image_prompt (context bleed prevention)
     const { data: priorMessages } = await supabase
       .from("messages")
@@ -213,11 +270,16 @@ export async function POST(request: Request) {
       content: body.message.trim(),
     });
 
+    const authRoutePrefix = body.routeHint?.trim()
+      ? `${body.routeHint.trim()}\n`
+      : "";
+
     const result = await runAgentPipeline({
-      userMessage: body.message.trim(),
+      userMessage: authRoutePrefix + body.message.trim(),
       history,
       brandGuidelines,
       brandDna,
+      partnerMemory,
       referenceImages:
         referenceImages.length > 0 ? referenceImages : undefined,
       previousImagePrompt,

@@ -11,11 +11,12 @@ import { useResolvedMyPage } from "@/lib/olar/business-profile";
 import { signInWithGoogle } from "@/lib/olar/auth-client";
 import { C } from "@/lib/olar/ui-copy";
 import { BrandGlyph, BRAND } from "../NetworkBrand";
-import { Check, Copy, Link2, Unlink, X } from "lucide-react";
+import { Check, Copy, Link2, Settings2, Unlink, X } from "lucide-react";
 
 type Meta = {
   title: string;
   tag: string;
+  purpose: string;
   desc: string;
   cta?: string;
   primary?: boolean;
@@ -27,6 +28,7 @@ function metaFor(id: IntegrationId): Meta {
       return {
         title: C.googleBizTitle,
         tag: C.tagFullAuto,
+        purpose: C.purposeGoogle,
         desc: C.descGoogleBiz,
         cta: C.ctaGoogleConnect,
         primary: true,
@@ -35,14 +37,23 @@ function metaFor(id: IntegrationId): Meta {
       return {
         title: C.waBizTitle,
         tag: C.tagMainChannel,
+        purpose: C.purposeWhatsapp,
         desc: C.descWaBiz,
         primary: true,
       };
     case "facebook":
+      return {
+        title: BRAND.facebook.label,
+        tag: C.tagBizPage,
+        purpose: C.purposeFacebook,
+        desc: C.descFbIgBiz,
+        primary: true,
+      };
     case "instagram":
       return {
-        title: BRAND[id].label,
+        title: BRAND.instagram.label,
         tag: C.tagBizPage,
+        purpose: C.purposeInstagram,
         desc: C.descFbIgBiz,
         primary: true,
       };
@@ -50,6 +61,7 @@ function metaFor(id: IntegrationId): Meta {
       return {
         title: C.easyTitle,
         tag: C.tagReviews,
+        purpose: C.purposeEasy,
         desc: C.descEasy,
         primary: true,
       };
@@ -57,16 +69,41 @@ function metaFor(id: IntegrationId): Meta {
       return {
         title: C.tiktokTitle,
         tag: C.tagShortVideo,
+        purpose: C.purposeTiktok,
         desc: C.descTiktok,
         primary: true,
       };
-    default:
+    default: {
+      const purposes: Partial<Record<IntegrationId, string>> = {
+        twitter: C.purposeTwitter,
+        telegram: C.purposeTelegram,
+        pinterest: C.purposePinterest,
+      };
       return {
         title: BRAND[id].label,
         tag: C.otherNetworks,
+        purpose: purposes[id] || C.otherNetworks,
         desc: C.networksSub,
       };
+    }
   }
+}
+
+function shortLine(
+  state: ConnEntry,
+  meta: Meta,
+  connected: boolean
+): string {
+  if (!connected) return meta.purpose;
+  const bits = [
+    state.kind === "business"
+      ? C.biz
+      : state.kind === "personal"
+        ? C.personal
+        : "",
+    state.handle || state.phone || state.pageUrl,
+  ].filter(Boolean);
+  return bits.join(" · ") || meta.purpose;
 }
 
 export function SettingsView() {
@@ -81,9 +118,18 @@ export function SettingsView() {
 
   const ordered = useMemo(() => NETWORK_PRIORITY, []);
 
+  const connectedCount = useMemo(
+    () => ordered.filter((id) => !isGuest && networks[id].connected).length,
+    [ordered, networks, isGuest]
+  );
+
+  const connectedIds = useMemo(
+    () => ordered.filter((id) => !isGuest && networks[id].connected),
+    [ordered, networks, isGuest]
+  );
+
   function openConnect(id: IntegrationId) {
     if (isGuest) {
-      // Guests cannot fake-connect — start real Google OAuth
       void signInWithGoogle("/");
       return;
     }
@@ -121,16 +167,12 @@ export function SettingsView() {
       kind: null,
       pageUrl: "",
     });
+    setModalId(null);
   }
 
   async function copyWaOpen() {
     const bio = `https://${page.url}`;
-    const msg =
-      C.waOpenMsg +
-      "\n" +
-      C.myPageTitle +
-      ": " +
-      bio;
+    const msg = C.waOpenMsg + "\n" + C.myPageTitle + ": " + bio;
     try {
       await navigator.clipboard.writeText(msg);
       setCopiedWa(true);
@@ -141,219 +183,164 @@ export function SettingsView() {
   }
 
   return (
-    <div className="w-full space-y-6 animate-rise" dir="rtl">
-      <header className="text-right">
+    <div className="mx-auto w-full max-w-7xl animate-rise" dir="rtl">
+      <header className="mb-5 text-right">
         <h1
-          className="text-3xl font-semibold text-slate-900"
+          className="text-xl font-semibold text-slate-900 sm:text-2xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
           {C.networksTitle}
         </h1>
-        <p className="mt-1 text-lg text-slate-800">{C.networksSub}</p>
+        <p className="mt-0.5 truncate text-sm text-slate-600">
+          {C.networksSub}
+        </p>
       </header>
 
-      <ul className="grid w-full grid-cols-1 gap-4 xl:grid-cols-2">
+      {/* ── Smart status line ── */}
+      <div className="mb-5 flex items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white px-4 py-3 shadow-sm">
+        <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-blue-50 text-blue-600">
+            <Link2 className="h-4 w-4" />
+          </span>
+          <span>
+            {C.loopStatusPrefix}{" "}
+            <span className="font-bold text-slate-900">{connectedCount}</span>{" "}
+            {C.loopStatusSuffix}
+          </span>
+        </div>
+        {connectedIds.length > 0 && (
+          <div className="flex items-center -space-x-1">
+            {connectedIds.map((id) => (
+              <span
+                key={id}
+                className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white"
+                style={{ backgroundColor: BRAND[id].bg }}
+              >
+                <BrandGlyph id={id} size={14} />
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Network cards grid ── */}
+      <ul className="grid w-full grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
         {ordered.map((id) => {
           const brand = BRAND[id];
           const state = networks[id];
           const meta = metaFor(id);
-          const isFbIg = id === "facebook" || id === "instagram";
           const connected = !isGuest && state.connected;
+          const line = shortLine(state, meta, connected);
+
           return (
             <li
               key={id}
-              className="rounded-2xl border border-line bg-white p-5 text-right shadow-[var(--shadow)]"
-              style={{
-                borderColor: connected ? brand.color + "55" : undefined,
-              }}
+              className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-5 text-right shadow-sm transition-all duration-200 hover:border-cyan-400/40 hover:shadow-md"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    <span
-                      className={
-                        id === "easy"
-                          ? "rounded-full border border-[#00D084]/40 bg-[#ECFDF5] px-3 py-1 text-sm font-medium text-[#00D084]"
-                          : id === "google"
-                            ? "rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm font-medium text-[#4285F4]"
-                            : id === "whatsapp"
-                              ? "rounded-full border border-[#25D366]/40 bg-[#E7F8EE] px-3 py-1 text-sm font-medium text-[#25D366]"
-                              : "rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-800"
-                      }
-                    >
-                      {isFbIg
-                        ? state.kind === "personal"
-                          ? C.tagPersonal
-                          : C.tagBizPage
-                        : meta.tag}
-                    </span>
-                    <p className="break-words text-xl font-semibold text-slate-900">
+              {/* Top: icon + name + purpose + badge */}
+              <div className="mb-auto">
+                <div className="flex items-start gap-3">
+                  <span
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
+                    style={{ backgroundColor: brand.bg }}
+                  >
+                    <BrandGlyph id={id} size={22} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-base font-bold text-slate-800">
                       {meta.title}
                     </p>
-                    <span
-                      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl"
-                      style={{
-                        backgroundColor:
-                          id === "easy"
-                            ? "#ECFDF5"
-                            : id === "whatsapp"
-                              ? "#E7F8EE"
-                              : brand.bg,
-                      }}
-                    >
-                      <BrandGlyph id={id} size={24} />
-                    </span>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {meta.purpose}
+                    </p>
                   </div>
-                  <p className="mt-2 break-words text-base leading-relaxed text-slate-800">
-                    {isFbIg
-                      ? state.kind === "personal"
-                        ? C.descFbIgPersonal
-                        : C.descFbIgBiz
-                      : meta.desc}
-                  </p>
-                  <p className="mt-2 break-words text-base text-slate-700">
-                    {connected
-                      ? [
-                          C.connectedOk,
-                          state.kind === "business"
-                            ? C.biz
-                            : state.kind === "personal"
-                              ? C.personal
-                              : "",
-                          state.handle || state.phone || state.pageUrl,
-                        ]
-                          .filter(Boolean)
-                          .join(" | ")
-                      : C.notConnected}
-                  </p>
+                  {connected && (
+                    <span className="mt-0.5 inline-flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                      {C.activeInLoop}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {id === "whatsapp" && !isGuest && (
-                <div className="mt-4 space-y-3">
-                  <label className="block text-base font-medium text-slate-900">
-                    {C.waPhoneLabel}
-                    <input
-                      dir="ltr"
-                      value={state.phone}
-                      onChange={(e) =>
-                        update("whatsapp", {
-                          phone: e.target.value,
-                          connected: true,
-                          kind: "business",
-                        })
-                      }
-                      placeholder={C.phonePlaceholder || undefined}
-                      inputMode="tel"
-                      className="mt-1.5 min-h-12 w-full rounded-xl border border-line bg-slate-50 px-4 text-left text-lg outline-none focus:border-accent"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => void copyWaOpen()}
-                    className="flex min-h-14 w-full items-center justify-center gap-2 rounded-xl border border-line bg-slate-50 text-base font-medium text-slate-900 hover:bg-slate-100"
-                  >
-                    <Copy className="h-5 w-5" />
-                    {copiedWa ? C.waOpenCopied : C.copyWaOpen}
-                  </button>
-                </div>
-              )}
-
-              {id === "easy" && !isGuest && (
-                <label className="mt-4 block text-right text-base font-medium text-slate-900">
-                  {C.easyUrlLabel}
-                  <input
-                    dir="ltr"
-                    value={state.pageUrl}
-                    onChange={(e) =>
-                      update("easy", {
-                        pageUrl: e.target.value,
-                        connected: Boolean(e.target.value.trim()),
-                        kind: "business",
-                      })
-                    }
-                    placeholder={C.easyUrlPlaceholder || undefined}
-                    className="mt-1.5 min-h-12 w-full rounded-xl border border-sky-100 bg-slate-50 px-4 text-left text-lg text-slate-900 outline-none focus:border-accent focus:ring-2 focus:ring-accent"
-                  />
-                </label>
-              )}
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                {connected && id !== "whatsapp" ? (
-                  <button
-                    type="button"
-                    onClick={() => disconnect(id)}
-                    className="flex min-h-12 items-center gap-1.5 rounded-xl border border-line px-4 text-base text-slate-800 hover:bg-slate-50"
-                  >
-                    <Unlink className="h-4 w-4" />
-                    {C.disconnect}
-                  </button>
-                ) : null}
+              {/* Bottom: account info or connect button */}
+              <div className="mt-4 flex items-center gap-2 border-t border-slate-100 pt-3">
                 {connected ? (
-                  <span className="inline-flex min-h-12 items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 text-base font-medium text-emerald-700">
-                    <Check className="h-4 w-4 text-emerald-600" />
-                    {C.connectedOk}
-                  </span>
+                  <>
+                    <p
+                      className="min-w-0 flex-1 truncate text-xs text-slate-600"
+                      dir="auto"
+                      title={line}
+                    >
+                      {line}
+                    </p>
+                    {id === "whatsapp" && (
+                      <button
+                        type="button"
+                        onClick={() => void copyWaOpen()}
+                        title={copiedWa ? C.waOpenCopied : C.copyWaOpen}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-600 transition hover:bg-slate-50"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => openConnect(id)}
+                      className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <Settings2 className="h-3.5 w-3.5" />
+                      {C.accountSettings}
+                    </button>
+                  </>
                 ) : (
                   <button
                     type="button"
                     onClick={() => openConnect(id)}
-                    className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl px-4 text-base font-medium text-white"
-                    style={{
-                      backgroundColor:
-                        id === "whatsapp"
-                          ? "#25D366"
-                          : id === "easy"
-                            ? "#00D084"
-                            : brand.color,
-                    }}
+                    className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-medium text-white transition hover:bg-slate-800"
                   >
-                    <Link2 className="h-4 w-4" />
-                    {isGuest
-                      ? C.connectShort || C.connect
-                      : id === "google"
-                        ? C.ctaGoogleConnect
-                        : C.connectAccount}
+                    <Link2 className="h-4 w-4 shrink-0" />
+                    <span className="truncate">
+                      {isGuest
+                        ? C.connectShort || C.connect
+                        : id === "google"
+                          ? C.ctaGoogleConnect
+                          : C.connectToLoop}
+                    </span>
                   </button>
                 )}
-                {connected &&
-                (isFbIg || id === "easy" || id === "whatsapp") ? (
-                  <button
-                    type="button"
-                    onClick={() => openConnect(id)}
-                    className="flex min-h-12 items-center gap-1.5 rounded-xl border border-line px-4 text-base font-medium text-slate-800 hover:bg-slate-50"
-                  >
-                    {C.saveChanges}
-                  </button>
-                ) : null}
               </div>
             </li>
           );
         })}
       </ul>
 
+      {/* Guest notice */}
       {isGuest ? (
-        <div className="w-full rounded-2xl border border-line bg-accent-soft/60 px-4 py-4 text-right text-base text-slate-800">
-          <p className="flex items-center justify-end gap-2 font-semibold text-slate-900">
+        <div className="mt-5 w-full rounded-2xl border border-slate-200/80 bg-white px-4 py-3 text-right shadow-sm">
+          <p className="flex items-center justify-end gap-1.5 text-sm font-semibold text-slate-900">
             {C.guestOn}
-            <Check className="h-4 w-4 text-accent" />
+            <Check className="h-3.5 w-3.5 text-accent" />
           </p>
-          <p className="mt-1 break-words">{C.guestHelp}</p>
+          <p className="mt-0.5 truncate text-xs text-slate-600">
+            {C.guestHelp}
+          </p>
         </div>
       ) : null}
 
+      {/* ── Connection modal ── */}
       {modalId && (
         <div
           className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-900/40 p-4 sm:items-center"
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-md rounded-3xl border border-line bg-white p-5 shadow-[var(--shadow)] sm:p-6">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200/80 bg-white p-5 shadow-xl sm:p-6">
             <div className="mb-4 flex items-start justify-between gap-3">
               <button
                 type="button"
                 onClick={() => setModalId(null)}
-                className="flex h-12 w-12 items-center justify-center rounded-xl border border-line"
+                className="flex h-12 w-12 items-center justify-center rounded-xl border border-slate-200"
                 aria-label={C.close}
               >
                 <X className="h-5 w-5" />
@@ -397,7 +384,7 @@ export function SettingsView() {
                     className={`min-h-[5rem] rounded-2xl border px-3 py-3 text-right transition ${
                       kind === opt.id
                         ? "border-accent bg-accent-soft"
-                        : "border-line bg-slate-50"
+                        : "border-slate-200 bg-slate-50"
                     }`}
                   >
                     <p className="text-base font-semibold text-slate-900">
@@ -417,7 +404,7 @@ export function SettingsView() {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="username"
-                  className="mt-1.5 min-h-14 w-full rounded-xl border border-line bg-slate-50 px-3 text-right text-lg outline-none focus:border-accent"
+                  className="mt-1.5 min-h-14 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-right text-lg outline-none focus:border-accent"
                 />
               </label>
             )}
@@ -426,14 +413,14 @@ export function SettingsView() {
               modalId === "facebook" ||
               modalId === "instagram") && (
               <label className="mt-3 block text-right text-base text-slate-900">
-                {C.phoneQuick}
+                {modalId === "whatsapp" ? C.waPhoneLabel : C.phoneQuick}
                 <input
                   dir="ltr"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder={C.phonePlaceholder}
                   inputMode="tel"
-                  className="mt-1.5 min-h-14 w-full rounded-xl border border-line bg-slate-50 px-3 text-left text-lg outline-none focus:border-accent"
+                  className="mt-1.5 min-h-14 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-left text-lg outline-none focus:border-accent"
                 />
               </label>
             )}
@@ -446,7 +433,7 @@ export function SettingsView() {
                   value={pageUrl}
                   onChange={(e) => setPageUrl(e.target.value)}
                   placeholder={C.easyUrlPlaceholder}
-                  className="mt-1.5 min-h-14 w-full rounded-xl border border-line bg-slate-50 px-3 text-left text-lg outline-none focus:border-accent"
+                  className="mt-1.5 min-h-14 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-left text-lg outline-none focus:border-accent"
                 />
               </label>
             )}
@@ -459,6 +446,17 @@ export function SettingsView() {
             >
               {modalId === "google" ? C.ctaGoogleConnect : C.confirmConnect}
             </button>
+
+            {!isGuest && networks[modalId].connected && (
+              <button
+                type="button"
+                onClick={() => disconnect(modalId)}
+                className="mt-3 flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 text-sm font-medium text-slate-600 transition hover:bg-slate-50"
+              >
+                <Unlink className="h-4 w-4" />
+                {C.disconnect}
+              </button>
+            )}
           </div>
         </div>
       )}

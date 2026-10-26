@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import {
   ONBOARDING_KEY,
   buildProfileFromInput,
@@ -9,6 +10,11 @@ import {
   saveProfile,
   type BusinessProfile,
 } from "@/lib/olar/business-profile";
+import {
+  saveCurrentPost,
+  saveCurrentPostImage,
+  syncCurrentPostToServer,
+} from "@/lib/olar/current-post";
 import { useAiProgressMessages } from "@/hooks/useAiProgressMessages";
 import { signInWithGoogle } from "@/lib/olar/auth-client";
 import { C } from "@/lib/olar/ui-copy";
@@ -51,7 +57,8 @@ const LINE_MS = 2300;
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const [phase, setPhase] = useState<Phase>("land");
   const [input, setInput] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
   const [lineIdx, setLineIdx] = useState(0);
   const [authOpen, setAuthOpen] = useState(false);
@@ -81,9 +88,36 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     };
   }, [phase, workLines.length]);
 
+  function persistPostDraft(
+    p: BusinessProfile,
+    imageUrl?: string | null,
+    imageMeta?: {
+      seed?: number | null;
+      prompt?: string | null;
+      fallback?: boolean;
+    }
+  ) {
+    const saved = saveCurrentPost({
+      headline: p.firstPost.headline,
+      body: p.firstPost.body,
+      cta: p.firstPost.cta,
+      hashtags: p.firstPost.hashtags,
+      offer: p.tagline,
+      image_url:
+        imageMeta?.fallback === true
+          ? null
+          : (imageUrl ?? undefined),
+      image_seed: imageMeta?.seed ?? null,
+      image_prompt: imageMeta?.prompt ?? null,
+      network: "instagram",
+    });
+    void syncCurrentPostToServer(saved);
+    return saved;
+  }
+
   async function generateOnboardingImage(p: BusinessProfile) {
     setPostImageLoading(true);
-    setPostImageUrl(null);
+    // Keep previous image visible until a real URL returns — do not wipe storage
     try {
       const res = await fetch("/api/generate-image", {
         method: "POST",
@@ -98,11 +132,36 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         signal: AbortSignal.timeout(55_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
-        image?: { url?: string };
+        fallback?: boolean;
+        image?: { url?: string; seed?: number; prompt?: string };
       };
-      if (data.image?.url) setPostImageUrl(data.image.url);
+      const url = data.image?.url;
+      if (url && !data.fallback) {
+        setPostImageUrl(url);
+        saveCurrentPostImage({
+          image_url: url,
+          image_seed: data.image?.seed ?? null,
+          image_prompt: data.image?.prompt ?? null,
+          fallback: false,
+        });
+        const draft = persistPostDraft(p, url, {
+          seed: data.image?.seed ?? null,
+          prompt: data.image?.prompt ?? null,
+        });
+        // If OAuth already started, refresh post backup so image survives login
+        try {
+          if (localStorage.getItem("olar-onboarding-pending") === "1") {
+            localStorage.setItem(
+              "olar-onboarding-post-backup",
+              JSON.stringify(draft)
+            );
+          }
+        } catch {
+          /* ignore */
+        }
+      }
     } catch {
-      /* soft fail — keep empty state with headline fallback in card */
+      /* soft fail — skeleton stays until a real URL exists */
     } finally {
       setPostImageLoading(false);
     }
@@ -110,6 +169,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   async function startMagic() {
     const raw = input.trim() || C.landExampleFallback;
+    const goalSuffix = selectedGoal ? `\n\nמטרת הפרסום: ${selectedGoal}` : "";
+    const fullInput = raw + goalSuffix;
     const local = buildProfileFromInput(raw);
     setProfile(local);
     setLineIdx(0);
@@ -123,7 +184,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       const res = await fetch("/api/onboarding/magic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: raw }),
+        body: JSON.stringify({ input: fullInput, goal: selectedGoal }),
         signal: AbortSignal.timeout(45_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -158,9 +219,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         };
         setProfile(finalProfile);
       }
+      persistPostDraft(finalProfile, postImageUrl);
       setSoftToast(data.soft_message || C.aiSoftReady);
     } catch {
       await minWait;
+      persistPostDraft(finalProfile, postImageUrl);
       setSoftToast(C.aiSoftReady);
     }
     setPhase("payoff");
@@ -168,7 +231,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   }
 
   function finishToApp() {
-    if (profile) saveProfile(profile);
+    if (profile) {
+      saveProfile(profile);
+      persistPostDraft(profile, postImageUrl);
+    }
     markOnboardingDone();
     try {
       localStorage.removeItem("olar-onboarding-pending");
@@ -181,11 +247,17 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   async function continueWithGoogle() {
     if (profile) {
       saveProfile(profile);
+      const draft = persistPostDraft(profile, postImageUrl);
       try {
         localStorage.setItem("olar-onboarding-pending", "1");
         localStorage.setItem(
           "olar-onboarding-profile-backup",
           JSON.stringify(profile)
+        );
+        // Ensure post (+ FAL image URL) survives the OAuth round-trip
+        localStorage.setItem(
+          "olar-onboarding-post-backup",
+          JSON.stringify(draft)
         );
       } catch {
         /* ignore */
@@ -222,9 +294,21 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       {phase === "land" && (
         <div className="mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-2xl flex-col justify-center">
           <div className="space-y-6 text-center sm:text-right">
-            <p className="text-sm font-semibold tracking-wide text-accent">
-              Olar Social · olar.me
-            </p>
+            <div className="flex flex-col items-center gap-3 sm:items-start">
+              <div className="inline-flex items-center rounded-xl bg-[#070b16] px-3 py-2">
+                <Image
+                  src="/one-loop-logo.png?v=2"
+                  alt="One Loop Social"
+                  width={215}
+                  height={120}
+                  priority
+                  className="h-10 w-auto object-contain"
+                />
+              </div>
+              <p className="text-sm font-semibold tracking-wide text-accent">
+                One Loop Social · olar.me
+              </p>
+            </div>
             <h1
               className="break-words text-3xl font-black leading-tight text-slate-950"
               style={{ fontFamily: "var(--font-display)" }}
@@ -234,32 +318,74 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             <p className="break-words text-lg leading-relaxed text-slate-700">
               {C.landSub}
             </p>
-            <label className="block text-right">
-              <span className="sr-only">{C.landInputLabel}</span>
-              <input
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void startMagic();
-                }}
-                placeholder={C.landPlaceholder}
-                className="min-h-16 w-full rounded-2xl border border-slate-300 bg-white px-5 text-lg text-slate-950 shadow-sm outline-none ring-accent/30 placeholder:text-slate-400 focus:border-accent focus:ring-4"
-              />
-            </label>
             <ExampleChips
               onSelect={(text) => {
                 setInput(text);
                 inputRef.current?.focus();
               }}
             />
-            <button
-              type="button"
-              onClick={() => void startMagic()}
-              className="olar-cta inline-flex min-h-12 w-full items-center justify-center rounded-full px-8 text-lg font-bold sm:w-auto"
-            >
-              {C.landCta}
-            </button>
+
+            <label className="block text-right">
+              <span className="sr-only">{C.landInputLabel}</span>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void startMagic();
+                  }
+                }}
+                placeholder={C.landPlaceholder}
+                className="min-h-[120px] w-full resize-y p-4 text-base rounded-2xl border border-slate-200 bg-white shadow-sm outline-none placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
+              />
+            </label>
+
+            {/* Goal selection cards */}
+            <div className="space-y-3 text-right">
+              <p className="text-sm font-semibold text-slate-700">
+                {C.goalSectionTitle}
+              </p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {([
+                  { key: "new_clients", label: C.goalNewClients },
+                  { key: "fill_schedule", label: C.goalFillSchedule },
+                  { key: "expertise", label: C.goalExpertise },
+                  { key: "launch", label: C.goalLaunch },
+                ] as const).map((goal) => (
+                  <button
+                    key={goal.key}
+                    type="button"
+                    onClick={() =>
+                      setSelectedGoal((prev) =>
+                        prev === goal.key ? null : goal.key
+                      )
+                    }
+                    className={`rounded-xl border px-4 py-3 text-right text-sm font-medium transition-all ${
+                      selectedGoal === goal.key
+                        ? "border-cyan-500 bg-cyan-50/50 text-cyan-800 shadow-sm"
+                        : "border-slate-200 bg-white text-slate-700 hover:border-cyan-300 hover:bg-cyan-50/30"
+                    }`}
+                  >
+                    {goal.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void startMagic()}
+                className="inline-flex min-h-12 w-full items-center justify-center rounded-full bg-gradient-to-r from-cyan-600 to-blue-600 px-8 text-lg font-bold text-white shadow-lg shadow-cyan-600/25 transition-all hover:shadow-xl hover:shadow-cyan-600/30 hover:brightness-110 sm:w-auto"
+              >
+                {C.landCta}
+              </button>
+              <p className="max-w-md text-center text-xs leading-relaxed text-slate-500">
+                {C.landCtaReassurance}
+              </p>
+            </div>
           </div>
         </div>
       )}

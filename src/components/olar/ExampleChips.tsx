@@ -3,9 +3,11 @@
 import { C } from "@/lib/olar/ui-copy";
 
 const CHIPS = [
-  { id: "garage", label: C.chipGarageLabel, text: C.chipGarageText },
-  { id: "beauty", label: C.chipBeautyLabel, text: C.chipBeautyText },
+  { id: "clinic", label: C.chipClinicLabel, text: C.chipClinicText },
   { id: "food", label: C.chipFoodLabel, text: C.chipFoodText },
+  { id: "services", label: C.chipServicesLabel, text: C.chipServicesText },
+  { id: "shop", label: C.chipShopLabel, text: C.chipShopText },
+  { id: "fitness", label: C.chipFitnessLabel, text: C.chipFitnessText },
 ] as const;
 
 type Props = {
@@ -24,7 +26,7 @@ export function ExampleChips({ onSelect, disabled }: Props) {
             type="button"
             disabled={disabled}
             onClick={() => onSelect(chip.text)}
-            className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-all hover:border-sky-300 hover:bg-sky-50 disabled:pointer-events-none disabled:opacity-40"
+            className="rounded-full border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm transition-all hover:border-cyan-400 hover:bg-cyan-50 hover:text-cyan-700 disabled:pointer-events-none disabled:opacity-40"
           >
             {chip.label}
           </button>

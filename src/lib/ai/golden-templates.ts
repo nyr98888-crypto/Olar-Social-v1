@@ -65,7 +65,7 @@ const GOLDEN: Record<GoldenNiche, GoldenTpl> = {
       "Authentic professional commercial photography for a local Israeli small business, clean contemporary lighting, real work context, no text overlay, no watermarks",
     chatReply:
       "הכנתי לך פוסט מוכן לעסק — אפשר לערוך וללטש כרצונך.",
-    hashtags: ["#עסקמקומי", "#אולרסושיאל"],
+    hashtags: ["#עסקמקומי", "#OneLoopSocial"],
   },
 };
 

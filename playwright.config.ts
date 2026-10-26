@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Olar Social — isolated E2E sanity suite.
+ * One Loop Social — isolated E2E sanity suite.
  * Assumes the app is already serving at http://localhost:3000
  * (e.g. `npm run dev`). Does not inject into or modify app source.
  */

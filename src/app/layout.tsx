@@ -1,6 +1,6 @@
 import "./globals.css";
 
-import type { Metadata, Viewport } from "next";
+import type { Viewport } from "next";
 import { Heebo, Frank_Ruhl_Libre } from "next/font/google";
 
 const heebo = Heebo({
@@ -15,9 +15,10 @@ const frank = Frank_Ruhl_Libre({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  title: "אולר סושיאל — Olar Social",
-  description: "אולר סושיאל — יונה AI, סטודיו, יומן, לידים ואנליטיקה במקום אחד · olar.me",
+export const metadata = {
+  title: 'One Loop Social - Your Marketing Partner',
+  description: 'All-in-one social growth and content management for local businesses',
+  icons: { icon: '/one-loop-logo.png?v=2' },
 };
 
 export const viewport: Viewport = {

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { OlarView } from "@/lib/olar/types";
 import { useResolvedMyPage } from "@/lib/olar/business-profile";
+import { useCurrentPost } from "@/lib/olar/current-post";
 import { useClientAuth } from "@/lib/olar/auth-client";
 import { C } from "@/lib/olar/ui-copy";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
@@ -22,6 +23,7 @@ export function QuickHomeView({
   onGoFull: () => void;
 }) {
   const { page } = useResolvedMyPage();
+  const { post: currentPost, ready: postReady } = useCurrentPost();
   const { isGuest, ready: authReady } = useClientAuth();
   const [copiedContent, setCopiedContent] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -29,16 +31,28 @@ export function QuickHomeView({
   const fullUrl = `https://${page.url}`;
   const readyPost = useMemo(
     () => ({
-      headline: page.firstPost?.headline || page.tagline || C.myBiz,
+      headline:
+        currentPost?.headline ||
+        page.firstPost?.headline ||
+        page.tagline ||
+        C.myBiz,
       body:
+        currentPost?.body ||
         page.firstPost?.body ||
         page.description ||
         C.pickSimple,
-      hashtags: page.firstPost?.hashtags || [],
-      call_to_action: page.firstPost?.cta || C.quoteWaCta,
+      hashtags:
+        currentPost?.hashtags?.length
+          ? currentPost.hashtags
+          : page.firstPost?.hashtags || [],
+      call_to_action:
+        currentPost?.cta || page.firstPost?.cta || C.quoteWaCta,
     }),
-    [page]
+    [page, currentPost]
   );
+
+  const imageUrl = currentPost?.image_url || null;
+  const imageLoading = postReady ? false : true;
 
   const visits = isGuest ? 0 : page.weekVisits ?? 0;
   const waClicks = isGuest ? 0 : 0;
@@ -49,6 +63,7 @@ export function QuickHomeView({
       readyPost.body,
       readyPost.call_to_action,
       (readyPost.hashtags || []).join(" "),
+      imageUrl || "",
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -99,8 +114,8 @@ export function QuickHomeView({
         </p>
       </header>
 
-      {/* 1. Daily Ready-to-Post */}
-      <section className="space-y-4 rounded-2xl border border-sky-100 bg-white p-4 shadow-lg shadow-slate-200/40 sm:p-6">
+      {/* 1. Daily Ready-to-Post — image from persisted image_url */}
+      <section className="space-y-4 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm transition-all duration-200 hover:border-cyan-400/40 hover:shadow-md sm:p-6">
         <div className="text-right">
           <h2 className="text-xl font-bold text-slate-900">
             {C.quickReadyTitle}
@@ -109,9 +124,16 @@ export function QuickHomeView({
         </div>
         <div className="flex justify-center">
           <PostCardPreview
-            network="instagram"
+            network={
+              currentPost?.network === "facebook" ||
+              currentPost?.network === "whatsapp"
+                ? currentPost.network
+                : "instagram"
+            }
             businessName={page.businessName || C.myBiz}
             post={readyPost}
+            imageUrl={imageUrl}
+            imageLoading={imageLoading && !imageUrl}
             className="w-full"
           />
         </div>
@@ -152,21 +174,21 @@ export function QuickHomeView({
         <button
           type="button"
           onClick={() => onNavigate("yona")}
-          className="min-h-12 break-words rounded-2xl border border-sky-100 bg-white px-4 py-4 text-center text-base font-bold text-slate-900 shadow-md transition hover:border-accent hover:bg-accent-soft"
+          className="min-h-12 break-words rounded-2xl border border-slate-200/80 bg-white px-4 py-4 text-center text-base font-bold text-slate-900 shadow-sm transition-all duration-200 hover:border-cyan-400/40 hover:shadow-md"
         >
           {C.quickChipPost30}
         </button>
         <button
           type="button"
           onClick={() => onNavigate("mypage")}
-          className="min-h-12 break-words rounded-2xl border border-sky-100 bg-white px-4 py-4 text-center text-base font-bold text-slate-900 shadow-md transition hover:border-accent hover:bg-accent-soft"
+          className="min-h-12 break-words rounded-2xl border border-slate-200/80 bg-white px-4 py-4 text-center text-base font-bold text-slate-900 shadow-sm transition-all duration-200 hover:border-cyan-400/40 hover:shadow-md"
         >
           {C.quickChipOffer}
         </button>
         <button
           type="button"
           onClick={() => void copyLandingLink()}
-          className="min-h-12 break-words rounded-2xl border border-sky-100 bg-white px-4 py-4 text-center text-base font-bold text-slate-900 shadow-md transition hover:border-accent hover:bg-accent-soft"
+          className="min-h-12 break-words rounded-2xl border border-slate-200/80 bg-white px-4 py-4 text-center text-base font-bold text-slate-900 shadow-sm transition-all duration-200 hover:border-cyan-400/40 hover:shadow-md"
         >
           {copiedLink ? C.linkCopiedShort : C.quickChipCopyLink}
         </button>
@@ -178,7 +200,7 @@ export function QuickHomeView({
           {C.quickPulseTitle}
         </h2>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="rounded-2xl border border-sky-100 bg-white p-5 text-right shadow-md">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-5 text-right shadow-sm transition-all duration-200 hover:border-cyan-400/40 hover:shadow-md">
             <p className="text-sm font-medium text-slate-600">
               {C.quickPulseVisits}
             </p>
@@ -194,7 +216,7 @@ export function QuickHomeView({
               </p>
             ) : null}
           </div>
-          <div className="rounded-2xl border border-sky-100 bg-white p-5 text-right shadow-md">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-5 text-right shadow-sm transition-all duration-200 hover:border-cyan-400/40 hover:shadow-md">
             <p className="text-sm font-medium text-slate-600">
               {C.quickPulseWa}
             </p>

@@ -36,13 +36,13 @@ export async function GET(request: Request) {
         );
       }
 
-      // Clear guest cookie so session is real auth going forward
+      // Clear guest cookie so session is real auth going forward.
+      // Client (OlarApp) migrates current_business_post from localStorage → Supabase.
       const res = NextResponse.redirect(`${origin}${next}`);
       res.cookies.set(GUEST_COOKIE, "", {
         ...guestCookieOptions(0),
         maxAge: 0,
       });
-      // Signal client to finalize onboarding + restore profile from localStorage
       res.cookies.set("olar_oauth_just_done", "1", {
         path: "/",
         maxAge: 120,

@@ -13,11 +13,11 @@ export function getAiProgressMessages(): [string, string, string] {
   const copy = C as Record<string, string>;
   return [
     copy.aiProgress1 ||
-      "הסוכן מנתח את העסק ומנסח רעיון מנצח...",
+      "חושבת על זווית טובה לפוסט הזה...",
     copy.aiProgress2 ||
-      "מדייק את המילים ומעצב ויז'ואל שמתאים בדיוק לעסק שלך...",
+      "מנסחת לנו את הפוסט...",
     copy.aiProgress3 ||
-      "כמעט שם! עוד רגע הכל מוכן לתצוגה...",
+      "כמעט מוכן! עוד רגע תראו את התוצאה...",
   ];
 }
 

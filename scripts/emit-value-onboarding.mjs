@@ -197,7 +197,7 @@ export function buildProfileFromInput(raw: string): BusinessProfile {
       headline: niche.postHeadline,
       body,
       cta: niche.postCta,
-      hashtags: [${J("#עסקמקומי")}, ${J("#אולרסושיאל")}, \`#\${businessName.replace(/\\s+/g, "")}\`],
+      hashtags: [${J("#עסקמקומי")}, ${J("#OneLoopSocial")}, \`#\${businessName.replace(/\\s+/g, "")}\`],
     },
     rawInput: raw.trim(),
   };
@@ -409,7 +409,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <div className="mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-2xl flex-col justify-center">
           <div className="space-y-6 text-center sm:text-right">
             <p className="text-sm font-semibold tracking-wide text-sky-600">
-              Olar Social · olar.me
+              One Loop Social · olar.me
             </p>
             <h1
               className="text-3xl font-black leading-tight text-slate-950"
@@ -653,10 +653,10 @@ function patchFile(path, replacer) {
   return false;
 }
 
-const brandName = "אולר סושיאל";
-const brandWrong = "עולר סושיאל";
-const tagWrong = "#עולרסושיאל";
-const tagRight = "#אולרסושיאל";
+const brandName = "One Loop Social";
+const brandWrong = "אולר סושיאל";
+const tagWrong = "#אולרסושיאל";
+const tagRight = "#OneLoopSocial";
 
 patchFile("src/lib/olar/mock-data.ts", (src) =>
   src
@@ -669,11 +669,12 @@ patchFile("src/lib/olar/mock-data.ts", (src) =>
 );
 
 patchFile("src/app/layout.tsx", (src) => {
-  const title = `${brandName} — Olar Social`;
-  const desc = `${brandName} — יונה AI, סטודיו, יומן, לידים ואנליטיקה במקום אחד · olar.me`;
+  const title = "One Loop Social - Your Marketing Partner";
+  const desc =
+    "All-in-one social growth and content management for local businesses";
   return src
-    .replace(/title:\s*"[^"]*"/, `title: ${J(title)}`)
-    .replace(/description:\s*\n?\s*"[^"]*"/, `description: ${J(desc)}`);
+    .replace(/title:\s*['"][^'"]*['"]/, `title: ${J(title)}`)
+    .replace(/description:\s*\n?\s*['"][^'"]*['"]/, `description: ${J(desc)}`);
 });
 
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));

@@ -1,12 +1,12 @@
 import { test, expect, type Page, type ConsoleMessage } from "@playwright/test";
 
 /**
- * Fully isolated Playwright sanity suite for Olar Social.
+ * Fully isolated Playwright sanity suite for One Loop Social.
  * Runs against a live server at http://localhost:3000 as a real browser user.
  * Does not modify any React / CSS / app source.
  */
 
-const BRAND = "אולר סושיאל";
+const BRAND = "One Loop Social";
 
 /** Severe console / page errors collected during navigation audits. */
 function isBenignConsole(msg: ConsoleMessage): boolean {
@@ -35,7 +35,10 @@ async function ensureMainShell(page: Page): Promise<void> {
       page.getByPlaceholder(/הקלד שם עסק|שם עסק|עיר/)
     );
     const menuBtn = page.getByRole("button", { name: "פתיחת תפריט" });
-    const brandInHeader = page.getByText(BRAND, { exact: true }).first();
+    const brandInHeader = page
+      .locator("header")
+      .getByRole("img", { name: BRAND })
+      .first();
 
     // Wait briefly for either onboarding land OR main shell
     const landed = await Promise.race([
@@ -94,7 +97,7 @@ async function navigateViaMenu(page: Page, label: string | RegExp): Promise<void
 
 test.describe.configure({ mode: "serial" });
 
-test.describe("Olar Social — system audit", () => {
+test.describe("One Loop Social — system audit", () => {
   test.beforeEach(async ({ page }) => {
     await ensureMainShell(page);
   });
@@ -103,10 +106,10 @@ test.describe("Olar Social — system audit", () => {
     page,
   }) => {
     await test.step("Brand appears in header/top", async () => {
-      const brand = page.locator("header").getByText(BRAND, { exact: true });
+      const brand = page.locator("header").getByRole("img", { name: BRAND });
       await expect(
         brand,
-        `Expected brand "${BRAND}" in the top header`
+        `Expected brand logo "${BRAND}" in the top header`
       ).toBeVisible();
     });
 
@@ -114,11 +117,11 @@ test.describe("Olar Social — system audit", () => {
       const menuBtn = page.getByRole("button", { name: "פתיחת תפריט" });
       await expect(menuBtn).toBeVisible();
 
-      const logo = page.locator("header").getByText(BRAND, { exact: true });
+      const logo = page.locator("header").getByRole("img", { name: BRAND });
       const menuBox = await menuBtn.boundingBox();
       const logoBox = await logo.boundingBox();
       expect(menuBox, "Menu button should have a bounding box").toBeTruthy();
-      expect(logoBox, "Brand/logo text should have a bounding box").toBeTruthy();
+      expect(logoBox, "Brand/logo should have a bounding box").toBeTruthy();
 
       const viewport = page.viewportSize();
       const nearRightEdge =

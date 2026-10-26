@@ -3,7 +3,7 @@
 import type { SocialNetwork } from "@/lib/olar/types";
 import { C } from "@/lib/olar/ui-copy";
 import { BrandGlyph } from "./NetworkBrand";
-import { MessageCircle } from "lucide-react";
+import { MessageCircle, Sparkles } from "lucide-react";
 
 export type PostCardData = {
   headline: string;
@@ -17,22 +17,47 @@ function platformLabel(network: SocialNetwork): string {
   if (network === "instagram" || network === "reels")
     return C.platformInstagram || "Instagram";
   if (network === "google") return C.platformGoogle || "Google Business";
+  if (network === "whatsapp") return C.platformWhatsapp || "WhatsApp";
   return C.platformInstagram || "Instagram";
 }
 
 function glyphId(
   network: SocialNetwork
-): "facebook" | "instagram" | "google" | "twitter" {
+): "facebook" | "instagram" | "google" | "twitter" | "whatsapp" {
   if (network === "facebook") return "facebook";
   if (network === "google") return "google";
   if (network === "twitter") return "twitter";
+  if (network === "whatsapp") return "whatsapp";
   return "instagram";
 }
 
 function aspectClass(network: SocialNetwork): string {
-  // Google Business leans 16:9 landscape; FB/IG feed-style 4:3
-  if (network === "google") return "aspect-video";
-  return "aspect-[4/3]";
+  if (network === "google") return "aspect-video"; // 16:9
+  if (network === "instagram" || network === "reels") return "aspect-[4/5]";
+  if (network === "whatsapp") return "aspect-square"; // 1:1
+  return "aspect-[4/3]"; // facebook
+}
+
+function ImageSkeleton({ label }: { label: string }) {
+  return (
+    <div
+      className="absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-hidden bg-gradient-to-br from-sky-100 via-white to-sky-50"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <div className="media-shimmer absolute inset-0 opacity-80" />
+      <span className="relative flex h-12 w-12 items-center justify-center rounded-full bg-accent/15 text-accent">
+        <Sparkles className="h-6 w-6 animate-pulse" />
+      </span>
+      <p className="relative max-w-[90%] break-words px-4 text-center text-sm font-medium text-slate-700">
+        {label}
+      </p>
+      <div className="relative mt-1 flex w-3/4 flex-col gap-2 px-6">
+        <div className="h-2.5 animate-pulse rounded-full bg-sky-200/80" />
+        <div className="mx-auto h-2.5 w-2/3 animate-pulse rounded-full bg-sky-100" />
+      </div>
+    </div>
+  );
 }
 
 export function PostCardPreview({
@@ -58,13 +83,16 @@ export function PostCardPreview({
   const hashtags = (post.hashtags || [])
     .map((t) => (t.startsWith("#") ? t : `#${t}`))
     .join(" ");
+  const showSkeleton = Boolean(imageLoading) || !imageUrl;
+  const skeletonLabel =
+    C.imageSkeletonBusy || "מכינה לך תמונה שתיראה מעולה... עוד כמה שניות";
 
   return (
     <article
-      className={`w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white text-right shadow-md ${className}`}
+      className={`w-full max-w-md rounded-2xl border border-slate-200 bg-white text-right shadow-md ${className}`}
       dir="rtl"
     >
-      {/* Header: business + platform tag */}
+      {/* Header: business + platform tag — UI shell only */}
       <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3">
         {logoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -89,28 +117,18 @@ export function PostCardPreview({
         </div>
       </div>
 
-      {/* Ad image */}
-      <div className={`relative w-full bg-slate-100 ${aspectClass(network)}`}>
-        {imageLoading ? (
-          <div className="absolute inset-0 animate-pulse bg-gradient-to-br from-sky-100 via-slate-100 to-white" />
-        ) : imageUrl ? (
+      {/* Ad image — always from persisted image_url; skeleton while loading/empty */}
+      <div className={`relative w-full overflow-hidden bg-slate-100 ${aspectClass(network)}`}>
+        {imageUrl && !imageLoading ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={imageUrl}
             alt=""
             className="h-full w-full object-cover"
           />
-        ) : (
-          <div className="flex h-full flex-col justify-end bg-gradient-to-br from-accent-soft via-slate-50 to-white p-4">
-            <p
-              className="break-words text-lg font-bold leading-snug text-slate-950"
-              style={{ fontFamily: "var(--font-display)" }}
-            >
-              {post.headline}
-            </p>
-            <p className="mt-1 text-sm text-slate-600">{C.imgReady}</p>
-          </div>
-        )}
+        ) : showSkeleton ? (
+          <ImageSkeleton label={skeletonLabel} />
+        ) : null}
       </div>
 
       {/* Body */}

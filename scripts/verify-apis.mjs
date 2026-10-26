@@ -91,7 +91,7 @@ results.push(
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost:3000",
-        "X-Title": "Olar verify-apis",
+        "X-Title": "One Loop Social verify-apis",
       },
       body: JSON.stringify({
         // OpenRouter allows ≤3 models per request

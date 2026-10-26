@@ -7,7 +7,7 @@ import fs from "fs";
 const EXTRA = [
   ["waSendMessage", "שלח הודעה בוואטסאפ"],
   ["postCardPreview", "תצוגת פוסט"],
-  ["guestWelcomeTitle", "ברוך הבא! צור את הפוסט או הקמפיין הראשון שלך"],
+  ["guestWelcomeTitle", "ברוכים הבאים ל-One Loop Social! צור את הפוסט או הקמפיין הראשון שלך"],
   ["guestWelcomeCta", "ליצירת פוסט ראשון"],
   ["connectShort", "התחבר"],
   ["googleBizTitle", "Google Business Profile"],
