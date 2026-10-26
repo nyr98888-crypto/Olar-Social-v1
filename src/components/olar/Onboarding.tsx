@@ -18,7 +18,10 @@ import {
 import { useAiProgressMessages } from "@/hooks/useAiProgressMessages";
 import { signInWithGoogle } from "@/lib/olar/auth-client";
 import { C } from "@/lib/olar/ui-copy";
-import { ExampleChips } from "@/components/olar/ExampleChips";
+import {
+  ExampleChips,
+  type NicheChipId,
+} from "@/components/olar/ExampleChips";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
 import { MessageCircle, Phone, Sparkles, X } from "lucide-react";
 
@@ -57,6 +60,7 @@ const LINE_MS = 2300;
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const [phase, setPhase] = useState<Phase>("land");
   const [input, setInput] = useState("");
+  const [selectedNiche, setSelectedNiche] = useState<NicheChipId | null>(null);
   const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
@@ -292,7 +296,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       dir="rtl"
     >
       {phase === "land" && (
-        <div className="mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-2xl flex-col justify-center">
+        <div className="mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-5xl flex-col justify-center">
           <div className="space-y-6 text-center sm:text-right">
             <div className="flex flex-col items-center gap-3 sm:items-start">
               <div className="inline-flex items-center rounded-xl bg-[#070b16] px-3 py-2">
@@ -319,28 +323,49 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               {C.landSub}
             </p>
             <ExampleChips
-              onSelect={(text) => {
+              selectedId={selectedNiche}
+              onSelect={(text, id) => {
+                setSelectedNiche(id ?? null);
                 setInput(text);
                 inputRef.current?.focus();
               }}
             />
 
-            <label className="block text-right">
-              <span className="sr-only">{C.landInputLabel}</span>
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    void startMagic();
-                  }
-                }}
-                placeholder={C.landPlaceholder}
-                className="min-h-[120px] w-full resize-y p-4 text-base rounded-2xl border border-slate-200 bg-white shadow-sm outline-none placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
-              />
-            </label>
+            <div className="space-y-2 text-right">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInput("");
+                    setSelectedNiche(null);
+                    inputRef.current?.focus();
+                  }}
+                  className="text-xs font-medium text-slate-500 underline-offset-2 transition hover:text-slate-800 hover:underline disabled:opacity-40"
+                  disabled={!input && !selectedNiche}
+                >
+                  {C.clearFieldBtn}
+                </button>
+                <span className="text-sm font-medium text-slate-600">
+                  {C.landInputLabel}
+                </span>
+              </div>
+              <label className="block">
+                <span className="sr-only">{C.landInputLabel}</span>
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void startMagic();
+                    }
+                  }}
+                  placeholder={C.landPlaceholder}
+                  className="min-h-[140px] w-full resize-y rounded-2xl border border-slate-200 bg-white p-4 text-base shadow-sm outline-none placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
+                />
+              </label>
+            </div>
 
             {/* Goal selection cards */}
             <div className="space-y-3 text-right">
