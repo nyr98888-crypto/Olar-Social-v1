@@ -5,30 +5,52 @@ import type { SocialNetwork } from "@/lib/olar/types";
 import { C } from "@/lib/olar/ui-copy";
 import {
   isCampaignPostsArray,
-  parseCampaignPosts,
   type CampaignPost,
 } from "@/lib/olar/campaign-posts";
 import { useAiProgressMessages } from "@/hooks/useAiProgressMessages";
 import { BrandGlyph } from "@/components/olar/NetworkBrand";
-import { Copy, Sparkles } from "lucide-react";
+import { AiSendButton } from "@/components/olar/AiSendButton";
+import { Copy, Loader2 } from "lucide-react";
+import { stripCategoryLeak } from "@/lib/olar/strip-category";
+import type { BusinessCategoryId } from "@/lib/olar/business-categories";
 
 /** Preview shells only — switching never regenerates / clears image_url */
-const NET_TAGS: { id: SocialNetwork; label: string }[] = [
-  { id: "facebook", label: "פייסבוק" },
-  { id: "instagram", label: "אינסטגרם" },
-  { id: "whatsapp", label: "וואטסאפ" },
+const NET_TAGS: {
+  id: SocialNetwork;
+  label: string;
+  glyph: "whatsapp" | "instagram" | "facebook" | "google";
+}[] = [
+  { id: "whatsapp", label: "WhatsApp Card", glyph: "whatsapp" },
+  { id: "instagram", label: "Instagram", glyph: "instagram" },
+  { id: "facebook", label: "Facebook", glyph: "facebook" },
+  { id: "google", label: "Google Business", glyph: "google" },
 ];
+
+type ChatBubble = { role: "user" | "assistant"; content: string };
 
 export function CampaignGenerator({
   initialTopic = "",
   previewNetwork,
   onPreviewNetworkChange,
   onActivePostChange,
+  onPostReady,
+  category,
+  hideNetworkTabs = false,
 }: {
   initialTopic?: string;
   previewNetwork?: SocialNetwork;
   onPreviewNetworkChange?: (n: SocialNetwork) => void;
   onActivePostChange?: (post: CampaignPost | null) => void;
+  /** Fired after generate-post succeeds — parent should refresh preview + image */
+  onPostReady?: (draft: {
+    headline: string;
+    body: string;
+    cta: string;
+    imagePrompt?: string;
+    userText: string;
+  }) => void;
+  category?: BusinessCategoryId | null;
+  hideNetworkTabs?: boolean;
 }) {
   const [topic, setTopic] = useState(initialTopic);
   const [busy, setBusy] = useState(false);
@@ -36,6 +58,7 @@ export function CampaignGenerator({
   const [copied, setCopied] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
+  const [chat, setChat] = useState<ChatBubble[]>([]);
   const [localNet, setLocalNet] = useState<SocialNetwork>(
     previewNetwork || "instagram"
   );
@@ -48,12 +71,14 @@ export function CampaignGenerator({
   }, [previewNetwork]);
 
   useEffect(() => {
+    if (initialTopic && !topic) setTopic(initialTopic);
+  }, [initialTopic, topic]);
+
+  useEffect(() => {
     const safe =
       posts && isCampaignPostsArray(posts) ? posts.slice(0, 3) : null;
     if (safe && safe[activeIdx]) {
       onActivePostChange?.(safe[activeIdx]!);
-    } else {
-      onActivePostChange?.(null);
     }
   }, [posts, activeIdx, onActivePostChange]);
 
@@ -63,31 +88,109 @@ export function CampaignGenerator({
   }
 
   async function generate() {
+    const userMessage = stripCategoryLeak(topic.trim());
+    if (!userMessage) {
+      setToast(C.landNeedInput || "כתבו כמה מילים על העסק");
+      return;
+    }
+
     setBusy(true);
     setPosts(null);
     setToast(null);
     setActiveIdx(0);
+    setChat((c) => [...c, { role: "user", content: userMessage }]);
+
     try {
-      const res = await fetch("/api/campaign/generate", {
+      const res = await fetch("/api/generate-post", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic: topic.trim() }),
+        body: JSON.stringify({
+          userText: userMessage,
+          prompt: userMessage,
+          category: category ?? undefined,
+        }),
         signal: AbortSignal.timeout(45_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
-        posts?: unknown;
+        ok?: boolean;
+        headline?: string;
+        bodyText?: string;
+        ctaButton?: string;
+        imagePrompt?: string;
         soft_message?: string;
+        error?: string;
+        chat_reply?: string;
       };
-      const parsed = parseCampaignPosts(data.posts, topic);
-      if (isCampaignPostsArray(parsed)) {
-        setPosts(parsed);
-      } else {
-        setPosts(parseCampaignPosts(null, topic));
+
+      if (!res.ok || data.ok === false) {
+        console.error("[CampaignGenerator] generate-post failed", {
+          status: res.status,
+          errData: data,
+        });
+        setChat((c) => [
+          ...c,
+          {
+            role: "assistant",
+            content:
+              data.error ||
+              C.generateErrorRetry ||
+              "חלה שגיאה בייצור, אנא נסה שנית",
+          },
+        ]);
+        setToast(data.error || C.generateErrorRetry);
+        return;
       }
+
+      const headline = stripCategoryLeak(data.headline || "").trim();
+      const body = stripCategoryLeak(data.bodyText || "").trim();
+      const cta = stripCategoryLeak(data.ctaButton || "").trim();
+
+      if (!headline || !body) {
+        setChat((c) => [
+          ...c,
+          {
+            role: "assistant",
+            content: C.generateErrorRetry,
+          },
+        ]);
+        setToast(C.generateErrorRetry);
+        return;
+      }
+
+      const jachnunHint = /ג['׳]?חנון|jachnun/i.test(userMessage);
+      const agentLine =
+        data.chat_reply?.trim() ||
+        (jachnunHint
+          ? "הנה הפוסט והתמונה שהכנתי עבור הג'חנון של דניאל לשבת!"
+          : `הנה הפוסט והתמונה שהכנתי עבור ${headline}!`);
+      setChat((c) => [...c, { role: "assistant", content: agentLine }]);
+
+      const campaignPost: CampaignPost = {
+        title: headline,
+        hook: "",
+        body,
+        cta: cta || "לתיאום בוואטסאפ",
+      };
+      setPosts([campaignPost]);
+      onActivePostChange?.(campaignPost);
+      onPostReady?.({
+        headline,
+        body,
+        cta: campaignPost.cta,
+        imagePrompt: data.imagePrompt,
+        userText: userMessage,
+      });
       setToast(data.soft_message || C.campaignReady || C.aiSoftReady);
-    } catch {
-      setPosts(parseCampaignPosts(null, topic));
-      setToast(C.campaignReady || C.aiSoftReady);
+    } catch (err) {
+      console.error("[CampaignGenerator] generate threw", err);
+      setChat((c) => [
+        ...c,
+        {
+          role: "assistant",
+          content: C.generateErrorRetry,
+        },
+      ]);
+      setToast(C.generateErrorRetry);
     } finally {
       setBusy(false);
     }
@@ -116,67 +219,95 @@ export function CampaignGenerator({
         {C.campaignHint || C.pickSimple}
       </p>
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {NET_TAGS.map((n) => (
-          <button
-            key={n.id}
-            type="button"
-            onClick={() => setNetwork(n.id)}
-            className={`inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl px-4 text-base font-medium ${
-              network === n.id
-                ? "bg-slate-900 text-white"
-                : "border border-slate-300 bg-white text-slate-800"
-            }`}
-          >
-            <BrandGlyph
-              id={
-                n.id === "whatsapp"
-                  ? "whatsapp"
-                  : n.id === "facebook"
-                    ? "facebook"
-                    : "instagram"
-              }
-              size={16}
-            />
-            {n.label}
-          </button>
-        ))}
-      </div>
+      {!hideNetworkTabs ? (
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {NET_TAGS.map((n) => (
+            <button
+              key={n.id}
+              type="button"
+              onClick={() => setNetwork(n.id)}
+              className={`inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl px-4 text-base font-medium ${
+                network === n.id
+                  ? "bg-slate-900 text-white"
+                  : "border border-slate-300 bg-white text-slate-800"
+              }`}
+            >
+              <BrandGlyph id={n.glyph} size={16} />
+              {n.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {chat.length > 0 ? (
+        <div className="max-h-48 space-y-2 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
+          {chat.map((m, i) => (
+            <div
+              key={`${m.role}-${i}`}
+              className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+            >
+              <div
+                className={`max-w-[90%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+                  m.role === "user"
+                    ? "bg-slate-900 text-white"
+                    : "border border-slate-200 bg-white text-slate-800"
+                }`}
+              >
+                {m.content}
+              </div>
+            </div>
+          ))}
+          {busy ? (
+            <p className="flex items-center gap-2 text-sm text-accent">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {aiProgress || C.generatingPostImage}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <label className="block text-base font-medium text-slate-900">
         {C.tellUs}
-        <textarea
-          dir="rtl"
-          value={topic}
-          onChange={(e) => setTopic(e.target.value)}
-          placeholder={C.phCampaign || C.placeholder}
-          className="mt-2 min-h-28 w-full break-words rounded-2xl border border-sky-100 bg-white p-4 text-right text-base leading-relaxed text-slate-800 outline-none focus:border-accent focus:ring-2 focus:ring-accent"
-        />
+        <div className="mt-2 flex gap-2" dir="rtl">
+          <textarea
+            dir="rtl"
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void generate();
+              }
+            }}
+            placeholder={C.phCampaign || C.placeholder}
+            className="min-h-28 min-w-0 flex-1 break-words rounded-2xl border border-sky-100 bg-white p-4 text-right text-base leading-relaxed text-slate-800 outline-none focus:border-accent focus:ring-2 focus:ring-accent"
+            disabled={busy}
+          />
+          <AiSendButton
+            onClick={() => void generate()}
+            disabled={busy || !topic.trim()}
+            loading={busy}
+            title={C.send}
+            className="h-14 w-14 self-end rounded-2xl"
+          />
+        </div>
       </label>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void generate()}
-        className="olar-cta flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl px-4 text-base disabled:opacity-50"
-      >
-        <Sparkles className="h-5 w-5 shrink-0" />
-        {busy ? aiProgress || C.making : C.makeCampaign || C.tabCampaign}
-      </button>
-      {busy ? (
-        <p className="animate-rise text-center text-base font-medium text-accent">
-          {aiProgress}
-        </p>
-      ) : null}
+
       {toast && !busy ? (
-        <p className="break-words rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-center text-base font-medium text-emerald-900">
+        <p
+          className={`break-words rounded-2xl border px-4 py-3 text-center text-base font-medium ${
+            toast === C.generateErrorRetry
+              ? "border-amber-200 bg-amber-50 text-amber-900"
+              : "border-emerald-200 bg-emerald-50 text-emerald-900"
+          }`}
+        >
           {toast}
         </p>
       ) : null}
 
       {safePosts ? (
-        <ul className="grid w-full gap-4 md:grid-cols-3">
+        <ul className="grid w-full gap-4 md:grid-cols-1">
           {safePosts.map((p, i) => {
-            // Guard: never render a single-character "title"
             if (
               typeof p.title !== "string" ||
               p.title.length < 2 ||
@@ -208,11 +339,8 @@ export function CampaignGenerator({
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-800">
                     <BrandGlyph
                       id={
-                        tagNet === "whatsapp"
-                          ? "whatsapp"
-                          : tagNet === "facebook"
-                            ? "facebook"
-                            : "instagram"
+                        NET_TAGS.find((n) => n.id === tagNet)?.glyph ||
+                        "instagram"
                       }
                       size={12}
                     />
@@ -224,11 +352,6 @@ export function CampaignGenerator({
                   >
                     {p.title}
                   </h3>
-                  {p.hook ? (
-                    <p className="mt-1 break-words text-sm font-medium text-slate-700">
-                      {p.hook}
-                    </p>
-                  ) : null}
                   <p className="mt-3 flex-1 whitespace-pre-line break-words text-base leading-relaxed text-slate-800">
                     {p.body}
                   </p>

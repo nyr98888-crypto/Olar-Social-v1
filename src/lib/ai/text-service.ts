@@ -22,8 +22,10 @@ import type { AgentOutput } from "../../../schemas/agent";
 
 export { OPENROUTER_MODELS };
 
-/** Hard cap for structured post generation — golden template on exceed. */
+/** Default hard cap for chat/structured — callers may pass a longer budget. */
 export const TEXT_PIPELINE_TIMEOUT_MS = 4_000;
+/** Onboarding / generate-post needs enough time for OpenRouter Haiku. */
+export const GENERATE_POST_TIMEOUT_MS = 28_000;
 
 export type TextServiceResult = {
   output: AgentOutput;
@@ -79,19 +81,20 @@ export function enforcePostPipeline(
 export async function generateStructuredText(
   system: string,
   messages: ChatTurn[],
-  inputContext?: Partial<PostInputContext>
+  inputContext?: Partial<PostInputContext> & { timeoutMs?: number }
 ): Promise<TextServiceResult> {
   const started = Date.now();
+  const timeoutMs = inputContext?.timeoutMs ?? TEXT_PIPELINE_TIMEOUT_MS;
   const ctx = contextFromMessages(messages, inputContext);
   console.log("[text-service] structured request", {
     openRouterModels: OPENROUTER_MODELS,
-    timeoutMs: TEXT_PIPELINE_TIMEOUT_MS,
+    timeoutMs,
   });
 
   try {
     const result = await withTimeout(
       runStructuredAgent(system, messages),
-      TEXT_PIPELINE_TIMEOUT_MS,
+      timeoutMs,
       "text-pipeline"
     );
 
@@ -128,7 +131,7 @@ export async function generateStructuredText(
     });
     return goldenResult(
       ctx,
-      timedOut ? "timeout_4s" : `provider_error:${msg.slice(0, 120)}`
+      timedOut ? `timeout_${timeoutMs}ms` : `provider_error:${msg.slice(0, 120)}`
     );
   }
 }

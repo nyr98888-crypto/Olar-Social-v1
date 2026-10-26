@@ -1,154 +1,103 @@
 "use client";
 
-import { useState } from "react";
 import type { OlarView } from "@/lib/olar/types";
-import {
-  CONTENT_IDEAS,
-  DASHBOARD_STATS,
-  OWNER_NAME,
-  QUICK_ACTIONS,
-  WEEK_DAYS,
-  WEEKLY_ACTIVITY,
-} from "@/lib/olar/mock-data";
-import { stashYonaIdea } from "@/lib/olar/yona-idea";
+import { useClientAuth } from "@/lib/olar/auth-client";
+import { useResolvedMyPage } from "@/lib/olar/business-profile";
+import { useCurrentPost } from "@/lib/olar/current-post";
 import { C } from "@/lib/olar/ui-copy";
-import { ArrowLeft, Lightbulb, Sparkles } from "lucide-react";
+import { ArrowLeft, Sparkles, Zap } from "lucide-react";
+
+const ZERO_STATS = [
+  { label: "שיתופים השבוע", value: "0" },
+  { label: "הודעות וואטסאפ", value: "0" },
+  { label: "לידים", value: "0" },
+  { label: "כניסות לדף", value: "0" },
+];
 
 export function DashboardView({
   onNavigate,
 }: {
   onNavigate: (v: OlarView) => void;
 }) {
-  const max = Math.max(...WEEKLY_ACTIVITY, 1);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const { isGuest, ready } = useClientAuth();
+  const { page } = useResolvedMyPage();
+  const { post } = useCurrentPost();
+  const hasActivity = Boolean(
+    post?.headline?.trim() || page.firstPost?.headline?.trim()
+  );
+  const displayName =
+    !isGuest && page.businessName?.trim() ? page.businessName.trim() : null;
 
-  function openIdea(idea: (typeof CONTENT_IDEAS)[number]) {
-    setSelectedId(idea.id);
-    stashYonaIdea({
-      id: idea.id,
-      title: idea.title,
-      blurb: idea.blurb,
-      headline: idea.headline,
-      body: idea.body,
-    });
-    onNavigate("yona");
-  }
+  if (!ready) return <div className="min-h-[40vh] w-full" />;
 
   return (
     <div className="w-full space-y-6 animate-rise" dir="rtl">
       <header className="space-y-2 text-right">
         <p className="text-base font-medium text-accent">{C.homeTitle}</p>
         <h1
-          className="text-3xl font-bold leading-tight text-slate-950 sm:text-4xl lg:text-5xl"
+          className="text-3xl font-bold leading-tight text-slate-950 sm:text-4xl"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          {C.helloWhat} {OWNER_NAME}, {C.whatToday}
+          {isGuest || !displayName
+            ? C.guestHelloWelcome
+            : `${C.helloWhat} ${displayName}`}
         </h1>
         <p className="w-full text-lg leading-relaxed text-slate-800">
-          {C.pickSimple}
+          {isGuest ? C.emptyDashboardInvite : C.pickSimple}
         </p>
       </header>
 
-      <div className="grid w-full grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-4">
-        {QUICK_ACTIONS.map((action) => (
+      <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {ZERO_STATS.map((stat) => (
+          <div
+            key={stat.label}
+            className="rounded-2xl border border-slate-200 bg-white p-5 text-right shadow-sm"
+          >
+            <p className="text-base text-slate-700">{stat.label}</p>
+            <p className="mt-1 text-3xl font-bold text-slate-950">{stat.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {!hasActivity ? (
+        <section className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center">
+          <p className="text-lg font-medium text-slate-700">
+            {C.emptyDashboardInvite}
+          </p>
+          <button
+            type="button"
+            onClick={() => onNavigate("yona")}
+            className="olar-cta mt-5 inline-flex min-h-12 items-center gap-2 rounded-xl px-6 text-base font-bold"
+          >
+            <Zap className="h-5 w-5" />
+            {C.guestWelcomeCta}
+          </button>
+        </section>
+      ) : null}
+
+      <div className="grid w-full gap-3 sm:grid-cols-2">
+        {(
+          [
+            { id: "yona" as const, label: "השותפה לשיווק" },
+            { id: "studio" as const, label: "סטודיו" },
+            { id: "calendar" as const, label: "יומן" },
+            { id: "mypage" as const, label: "דף הביו" },
+          ] as const
+        ).map((action) => (
           <button
             key={action.id}
             type="button"
-            onClick={() => onNavigate(action.view)}
-            className="olar-card flex min-h-16 cursor-pointer items-center justify-between px-5 text-right shadow-md transition hover:border-accent hover:shadow-lg active:scale-[0.99]"
+            onClick={() => onNavigate(action.id)}
+            className="flex min-h-14 cursor-pointer items-center justify-between rounded-2xl border border-slate-200 bg-white px-5 text-right shadow-sm transition hover:border-cyan-400"
           >
             <span className="flex items-center gap-2 text-lg font-medium text-slate-950">
               <Sparkles className="h-5 w-5 text-accent" aria-hidden />
               {action.label}
             </span>
-            <ArrowLeft className="h-5 w-5 text-slate-800" aria-hidden />
+            <ArrowLeft className="h-5 w-5 text-slate-700" aria-hidden />
           </button>
         ))}
       </div>
-
-      <section className="w-full space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={() => onNavigate("yona")}
-            className="min-h-12 text-base font-medium text-accent hover:underline"
-          >
-            {C.allIdeasYona}
-          </button>
-          <h2 className="flex items-center gap-2 text-xl font-bold text-slate-950">
-            {C.nothingToPost}
-            <Lightbulb className="h-5 w-5 text-amber-500" />
-          </h2>
-        </div>
-        <div className="grid w-full gap-6 md:grid-cols-3">
-          {CONTENT_IDEAS.map((idea) => (
-            <button
-              key={idea.id}
-              type="button"
-              onClick={() => openIdea(idea)}
-              className={`olar-card cursor-pointer p-5 text-right shadow-md transition hover:border-accent hover:shadow-lg active:scale-[0.99] ${
-                selectedId === idea.id
-                  ? "ring-2 ring-sky-600 bg-sky-50"
-                  : ""
-              }`}
-            >
-              <p className="text-lg font-bold text-slate-950">{idea.title}</p>
-              <p className="mt-2 text-base leading-relaxed text-slate-800">
-                {idea.blurb}
-              </p>
-              <p className="mt-3 text-base font-medium text-accent">
-                {C.clickYonaPost}
-              </p>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="grid w-full gap-6 sm:grid-cols-2 xl:grid-cols-4">
-        {DASHBOARD_STATS.map((stat) => (
-          <div key={stat.label} className="olar-card p-5 text-right shadow-md">
-            <p className="text-base text-slate-800">{stat.label}</p>
-            <p className="mt-1 text-3xl font-bold text-slate-950">{stat.value}</p>
-            <p
-              className={`mt-1 text-base font-medium ${
-                stat.good ? "text-accent" : "text-danger"
-              }`}
-            >
-              {stat.delta}
-            </p>
-          </div>
-        ))}
-      </section>
-
-      <section className="olar-card w-full p-5 shadow-md">
-        <div className="mb-4 flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={() => onNavigate("calendar")}
-            className="min-h-12 text-base font-medium text-accent hover:underline"
-          >
-            {C.whenWePublish}
-          </button>
-          <h2 className="text-xl font-bold text-slate-950">{C.postsThisWeek}</h2>
-        </div>
-        <div className="flex h-40 items-end gap-2 sm:gap-3">
-          {WEEKLY_ACTIVITY.map((n, i) => (
-            <div key={WEEK_DAYS[i]} className="flex flex-1 flex-col items-center gap-2">
-              <div
-                className="w-full rounded-t-lg bg-accent/80"
-                style={{ height: `${Math.max((n / max) * 100, n ? 12 : 4)}%` }}
-                title={String(n)}
-              />
-              <span className="text-base font-medium text-slate-950">
-                {WEEK_DAYS[i]}
-              </span>
-            </div>
-          ))}
-        </div>
-        <p className="mt-4 text-base leading-relaxed text-slate-800">
-          {C.fiveDaysHint}
-        </p>
-      </section>
     </div>
   );
 }

@@ -33,3 +33,42 @@ export function fetchSignal(ms: number): AbortSignal | undefined {
     return undefined;
   }
 }
+
+/**
+ * fetch with AbortController hard cut — used by image circuit-breaker
+ * (FAL 7s → Together 8s).
+ */
+export async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+  label = "fetch"
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const parent = options.signal;
+    if (parent) {
+      if (parent.aborted) controller.abort();
+      else {
+        parent.addEventListener("abort", () => controller.abort(), {
+          once: true,
+        });
+      }
+    }
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      const timed = new Error(
+        `${label} timed out after ${timeoutMs}ms`
+      ) as Error & { status?: number; code?: string };
+      timed.status = 504;
+      timed.code = "ETIMEDOUT";
+      throw timed;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}

@@ -36,8 +36,12 @@ export interface AgentRequest {
   deferImage?: boolean;
 }
 
+export type ImageProviderId = "fal" | "together" | "static-fallback";
+
 export interface GeneratedImage {
   url: string;
+  /** Which provider produced the URL (circuit-breaker / fallback). */
+  provider?: ImageProviderId;
   seed: number;
   prompt: string;
 }

@@ -29,32 +29,27 @@ export function QuickHomeView({
   const [copiedLink, setCopiedLink] = useState(false);
 
   const fullUrl = `https://${page.url}`;
-  const readyPost = useMemo(
-    () => ({
-      headline:
-        currentPost?.headline ||
-        page.firstPost?.headline ||
-        page.tagline ||
-        C.myBiz,
-      body:
-        currentPost?.body ||
-        page.firstPost?.body ||
-        page.description ||
-        C.pickSimple,
-      hashtags:
-        currentPost?.hashtags?.length
-          ? currentPost.hashtags
-          : page.firstPost?.hashtags || [],
-      call_to_action:
-        currentPost?.cta || page.firstPost?.cta || C.quoteWaCta,
-    }),
-    [page, currentPost]
+  const readyPost = useMemo(() => {
+    const headline =
+      currentPost?.headline || page.firstPost?.headline || "";
+    const body = currentPost?.body || page.firstPost?.body || "";
+    return {
+      headline,
+      body,
+      hashtags: currentPost?.hashtags?.length
+        ? currentPost.hashtags
+        : page.firstPost?.hashtags || [],
+      call_to_action: currentPost?.cta || page.firstPost?.cta || "",
+    };
+  }, [page, currentPost]);
+  const hasReadyPost = Boolean(
+    readyPost.headline.trim() && readyPost.body.trim()
   );
 
   const imageUrl = currentPost?.image_url || null;
   const imageLoading = postReady ? false : true;
 
-  const visits = isGuest ? 0 : page.weekVisits ?? 0;
+  const visits = 0;
   const waClicks = isGuest ? 0 : 0;
 
   async function copyContentAndImage() {
@@ -123,19 +118,25 @@ export function QuickHomeView({
           <p className="mt-1 text-base text-slate-700">{C.quickReadySub}</p>
         </div>
         <div className="flex justify-center">
-          <PostCardPreview
-            network={
-              currentPost?.network === "facebook" ||
-              currentPost?.network === "whatsapp"
-                ? currentPost.network
-                : "instagram"
-            }
-            businessName={page.businessName || C.myBiz}
-            post={readyPost}
-            imageUrl={imageUrl}
-            imageLoading={imageLoading && !imageUrl}
-            className="w-full"
-          />
+          {hasReadyPost ? (
+            <PostCardPreview
+              network={
+                currentPost?.network === "facebook" ||
+                currentPost?.network === "whatsapp"
+                  ? currentPost.network
+                  : "instagram"
+              }
+              businessName={page.businessName || C.myBiz}
+              post={readyPost}
+              imageUrl={imageUrl}
+              imageLoading={imageLoading && !imageUrl}
+              className="w-full"
+            />
+          ) : (
+            <p className="w-full rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-base text-slate-600">
+              {C.postPreviewEmpty}
+            </p>
+          )}
         </div>
         <div className="flex flex-col gap-3 sm:flex-row">
           <button
@@ -210,11 +211,9 @@ export function QuickHomeView({
             >
               {visits}
             </p>
-            {isGuest ? (
-              <p className="mt-2 break-words text-sm text-slate-700">
-                {C.quickPulseGuestHint}
-              </p>
-            ) : null}
+            <p className="mt-2 break-words text-sm text-slate-700">
+              {C.emptyDashboardStats}
+            </p>
           </div>
           <div className="rounded-2xl border border-slate-200/80 bg-white p-5 text-right shadow-sm transition-all duration-200 hover:border-cyan-400/40 hover:shadow-md">
             <p className="text-sm font-medium text-slate-600">
@@ -226,11 +225,9 @@ export function QuickHomeView({
             >
               {waClicks}
             </p>
-            {isGuest ? (
-              <p className="mt-2 break-words text-sm text-slate-700">
-                {C.quickPulseGuestHint}
-              </p>
-            ) : null}
+            <p className="mt-2 break-words text-sm text-slate-700">
+              {C.emptyDashboardStats}
+            </p>
           </div>
         </div>
       </section>

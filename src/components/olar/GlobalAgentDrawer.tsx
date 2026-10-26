@@ -10,13 +10,14 @@ import {
 } from "@/lib/olar/current-post";
 import { C } from "@/lib/olar/ui-copy";
 import {
-  Send,
   Sparkles,
   X,
   ChevronDown,
   Clapperboard,
 } from "lucide-react";
 import { PostCardPreview } from "./PostCardPreview";
+import { AgentAvatar } from "./AgentAvatar";
+import { AiSendButton } from "./AiSendButton";
 import type { OlarView } from "@/lib/olar/types";
 
 /* ——— Route-context view labels ——— */
@@ -282,15 +283,8 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
           className="group fixed bottom-20 start-6 z-50 flex items-center gap-2 md:bottom-6"
           aria-label="דבר איתי"
         >
-          <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-accent text-white shadow-lg shadow-sky-600/30 transition-transform group-hover:scale-105">
-            {/* Avatar — Yona marketing manager */}
-            <span className="text-2xl" role="img" aria-label="יונה">
-              👩‍💼
-            </span>
-            {/* Green "connected" badge */}
-            <span className="absolute -bottom-0.5 -end-0.5 flex h-4 w-4 items-center justify-center rounded-full border-2 border-white bg-emerald-500">
-              <span className="h-2 w-2 rounded-full bg-white" />
-            </span>
+          <div className="transition-transform group-hover:scale-105">
+            <AgentAvatar size="lg" />
           </div>
           {/* Hover label — desktop only */}
           <span className="hidden rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white shadow-md group-hover:block">
@@ -323,10 +317,7 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="relative flex h-10 w-10 items-center justify-center rounded-full bg-accent-soft">
-              <span className="text-xl">👩‍💼</span>
-              <span className="absolute -bottom-0.5 -end-0.5 h-3.5 w-3.5 rounded-full border-2 border-white bg-emerald-500" />
-            </div>
+            <AgentAvatar size="md" />
             <div className="text-right">
               <p className="text-base font-bold text-slate-950">
                 {C.yonaTitle}
@@ -426,15 +417,12 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
               className="min-h-[44px] max-h-28 min-w-0 flex-1 resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-right text-sm text-slate-900 outline-none focus:border-accent focus:ring-1 focus:ring-accent"
               disabled={busy}
             />
-            <button
-              type="button"
+            <AiSendButton
               onClick={() => void send()}
               disabled={busy || !input.trim()}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-white disabled:opacity-40"
-              aria-label={C.send}
-            >
-              <Send className="h-4 w-4" />
-            </button>
+              loading={busy}
+              title={C.send}
+            />
           </div>
         </div>
       </aside>
@@ -459,15 +447,12 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
           </div>
           <div className="flex items-center justify-between border-b border-slate-200 px-4 pb-3">
             <div className="flex items-center gap-3">
-              <div className="relative flex h-9 w-9 items-center justify-center rounded-full bg-accent-soft">
-                <span className="text-lg">👩‍💼</span>
-                <span className="absolute -bottom-0.5 -end-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500" />
-              </div>
+              <AgentAvatar size="sm" />
               <div className="text-right">
                 <p className="text-sm font-bold text-slate-950">
                   {C.yonaTitle}
                 </p>
-                <p className="text-[11px] text-emerald-600 font-medium">
+                <p className="text-[11px] font-medium text-emerald-600">
                   מחוברת
                 </p>
               </div>
@@ -563,15 +548,12 @@ export function GlobalAgentDrawer({ activeView, onNavigateToStudio }: Props) {
               className="min-h-[44px] max-h-28 min-w-0 flex-1 resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-right text-sm text-slate-900 outline-none focus:border-accent focus:ring-1 focus:ring-accent"
               disabled={busy}
             />
-            <button
-              type="button"
+            <AiSendButton
               onClick={() => void send()}
               disabled={busy || !input.trim()}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-white disabled:opacity-40"
-              aria-label={C.send}
-            >
-              <Send className="h-4 w-4" />
-            </button>
+              loading={busy}
+              title={C.send}
+            />
           </div>
         </div>
       </div>

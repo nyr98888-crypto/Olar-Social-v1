@@ -1,17 +1,15 @@
 /**
- * Soft niche fallback — delegates to golden templates (production guardrails).
- * Kept for backward-compatible imports from soft-response / onboarding.
+ * Soft fallback — empty posts on AI failure (no canned marketing copy).
  */
 import type { AgentOutput, BrandGuidelines } from "../../../schemas/agent";
 import {
   buildGoldenAgentOutput,
   detectGoldenNiche,
+  preferDraftOrEmpty,
   type GoldenNiche,
 } from "./golden-templates";
-import {
-  gateAgentOutputWithGolden,
-  type PostInputContext,
-} from "./pipeline-validator";
+import type { PostInputContext } from "./pipeline-validator";
+import { stripCategoryLeak } from "@/lib/olar/strip-category";
 
 export type FallbackBizContext = {
   businessName?: string;
@@ -22,9 +20,7 @@ export type FallbackBizContext = {
   phone?: string;
 };
 
-export function detectFallbackNiche(
-  raw: string
-): GoldenNiche {
+export function detectFallbackNiche(raw: string): GoldenNiche {
   return detectGoldenNiche(raw);
 }
 
@@ -32,9 +28,9 @@ export function parseBizFromRaw(raw: string): {
   businessName: string;
   city: string;
 } {
-  const cleaned = raw.trim().replace(/\s+/g, " ");
+  const cleaned = stripCategoryLeak(raw).trim().replace(/\s+/g, " ");
   if (!cleaned) {
-    return { businessName: "העסק שלי", city: "" };
+    return { businessName: "", city: "" };
   }
   const parts = cleaned.split(" ");
   if (parts.length >= 2) {
@@ -51,11 +47,13 @@ function toPostContext(
   brand?: BrandGuidelines | null
 ): PostInputContext {
   const raw =
-    ctx.rawInput ||
-    [ctx.businessName, ctx.city, ctx.niche, brand?.brand_name, brand?.notes]
-      .filter(Boolean)
-      .join(" ") ||
-    "";
+    stripCategoryLeak(
+      ctx.rawInput ||
+        [ctx.businessName, ctx.city, ctx.niche, brand?.brand_name, brand?.notes]
+          .filter(Boolean)
+          .join(" ") ||
+        ""
+    ) || "";
   const parsed = parseBizFromRaw(raw);
   return {
     rawPrompt: raw,
@@ -70,10 +68,7 @@ function toPostContext(
   };
 }
 
-/**
- * Soft success AgentOutput — golden template, never invents prices.
- * Optionally run through pipeline gate if a draft output is supplied.
- */
+/** Soft success — empty social_post, never invents niche marketing. */
 export function buildNicheFallbackOutput(
   ctx: FallbackBizContext = {},
   brand?: BrandGuidelines | null
@@ -81,17 +76,17 @@ export function buildNicheFallbackOutput(
   return buildGoldenAgentOutput(toPostContext(ctx, brand));
 }
 
-/** Sanitize an AI draft; replace with golden if invalid. */
+/** Prefer AI draft; if invalid → soft empty (not golden marketing). */
 export function sanitizeOrGolden(
   output: AgentOutput,
   ctx: FallbackBizContext = {},
   brand?: BrandGuidelines | null
 ): AgentOutput {
-  const postCtx = toPostContext(ctx, brand);
-  return gateAgentOutputWithGolden(output, postCtx, buildGoldenAgentOutput)
-    .output;
+  return preferDraftOrEmpty(output, toPostContext(ctx, brand));
 }
 
-/** Soft toast copy (also mirrored in ui-copy). */
 export const FALLBACK_SOFT_READY_HE =
   "הפוסט מוכן! ניתן לערוך וללטש אותו כרצונך.";
+
+export const FALLBACK_SOFT_FAIL_HE =
+  "חלה שגיאה בייצור, אנא נסה שנית";

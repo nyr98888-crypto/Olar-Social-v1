@@ -36,14 +36,24 @@ const TITLES: Record<OlarView, string> = {
   settings: C.networksTitle,
 };
 
-export function OlarApp() {
-  const [view, setView] = useState<OlarView>("home");
+export function OlarApp({
+  initialView = "home",
+}: {
+  initialView?: OlarView;
+} = {}) {
+  const [view, setView] = useState<OlarView>(initialView);
   const [menuOpen, setMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const { ready, show, complete, restart } = useOnboardingGate();
   const { theme, ready: themeReady } = useOlarTheme();
   const { workMode, setWorkMode, ready: modeReady } = useWorkMode();
+
+  useEffect(() => {
+    if (initialView && initialView !== "home") {
+      setView(initialView);
+    }
+  }, [initialView]);
 
   function finishOnboarding() {
     setWorkMode("quick");
@@ -55,6 +65,13 @@ export function OlarApp() {
     setMenuOpen(false);
     setUserMenuOpen(false);
     setView(next);
+    if (typeof window !== "undefined") {
+      if (next === "calendar") {
+        window.history.replaceState(null, "", "/calendar");
+      } else if (window.location.pathname === "/calendar") {
+        window.history.replaceState(null, "", "/");
+      }
+    }
   }
 
   function handleWorkMode(next: typeof workMode) {
@@ -64,11 +81,17 @@ export function OlarApp() {
     if (view !== "home") setView("home");
   }
 
-  function handleRestartOnboarding() {
+  async function handleRestartOnboarding() {
     setUserMenuOpen(false);
     setMenuOpen(false);
     setView("home");
     setWorkMode("quick");
+    try {
+      const { signOutAndClear } = await import("@/lib/olar/auth-client");
+      await signOutAndClear();
+    } catch {
+      /* ignore */
+    }
     restart();
   }
 
@@ -144,8 +167,28 @@ export function OlarApp() {
           return;
         }
 
-        if (backup) {
-          localStorage.setItem("olar-business-profile", backup);
+        // Migrate OAuth bridge → user_data_${id} (see client-storage)
+        try {
+          const { migrateBridgeToUser, setCachedAuthUserId } = await import(
+            "@/lib/olar/client-storage"
+          );
+          const { createClient, isSupabaseConfigured } = await import(
+            "@/lib/supabase/client"
+          );
+          if (isSupabaseConfigured()) {
+            const supabase = createClient();
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+            if (session?.user?.id) {
+              setCachedAuthUserId(session.user.id);
+              migrateBridgeToUser(session.user.id);
+            }
+          }
+        } catch {
+          if (backup) {
+            localStorage.setItem("olar-business-profile", backup);
+          }
         }
 
         let postPayload: Record<string, unknown> | null = null;
@@ -254,7 +297,7 @@ export function OlarApp() {
       data-theme={theme}
       dir="rtl"
     >
-      <TopTicker onNavigate={handleNavigate} />
+      <TopTicker />
 
       {/*
         RTL header:
@@ -307,7 +350,7 @@ export function OlarApp() {
               <div className="absolute left-0 top-12 z-50 w-72 rounded-xl border border-slate-200 bg-white p-2 text-right shadow-xl">
                 <button
                   type="button"
-                  onClick={handleRestartOnboarding}
+                  onClick={() => void handleRestartOnboarding()}
                   className="flex min-h-12 w-full items-center justify-end gap-2 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-900 hover:bg-sky-50"
                 >
                   <span>{C.logoutRestartOnboarding}</span>

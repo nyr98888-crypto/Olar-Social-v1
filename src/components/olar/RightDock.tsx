@@ -8,32 +8,101 @@ import {
   CalendarDays,
   Clapperboard,
   Eye,
+  Fingerprint,
   Globe,
-  LayoutDashboard,
+  Link2,
   MessageSquare,
-  Settings2,
   Star,
   X,
 } from "lucide-react";
 
-const NAV: {
+type NavItem = {
+  key: string;
   id: OlarView;
   label: string;
-  icon: typeof LayoutDashboard;
-}[] = [
-  { id: "yona", label: C.navAgentSmart || C.yonaTitle, icon: Bot },
-  { id: "studio", label: C.navCampaigns || C.studioTitle, icon: Clapperboard },
-  { id: "mypage", label: C.navBioPage || C.myPageTitle, icon: Globe },
-  { id: "home", label: C.homeTitle, icon: LayoutDashboard },
-  { id: "settings", label: C.networksTitle, icon: Settings2 },
-  { id: "leads", label: C.peopleTitle, icon: MessageSquare },
-  { id: "calendar", label: C.calendarTitle, icon: CalendarDays },
-  { id: "reviews", label: C.reviewsTitle, icon: Star },
-  { id: "analytics", label: C.whatWorked, icon: Eye },
+  icon: typeof Bot;
+};
+
+type NavSection = {
+  title: string;
+  items: NavItem[];
+};
+
+const SECTIONS: NavSection[] = [
+  {
+    title: C.navSectionMarketing,
+    items: [
+      {
+        key: "studio-partner",
+        id: "yona",
+        label: C.navStudioPartner,
+        icon: Bot,
+      },
+      {
+        key: "calendar",
+        id: "calendar",
+        label: C.calendarTitle,
+        icon: CalendarDays,
+      },
+      {
+        key: "campaigns",
+        id: "studio",
+        label: C.navCampaigns,
+        icon: Clapperboard,
+      },
+    ],
+  },
+  {
+    title: C.navSectionCustomers,
+    items: [
+      {
+        key: "leads",
+        id: "leads",
+        label: C.peopleTitle,
+        icon: MessageSquare,
+      },
+      {
+        key: "reviews",
+        id: "reviews",
+        label: C.navReviewsShort,
+        icon: Star,
+      },
+      {
+        key: "analytics",
+        id: "analytics",
+        label: C.whatWorked,
+        icon: Eye,
+      },
+    ],
+  },
+  {
+    title: C.navSectionAssets,
+    items: [
+      {
+        key: "bio",
+        id: "mypage",
+        label: C.navDigitalCard,
+        icon: Globe,
+      },
+      {
+        key: "networks",
+        id: "settings",
+        label: C.navConnectNetworks,
+        icon: Link2,
+      },
+      {
+        key: "dna",
+        id: "settings",
+        label: C.navDnaSettings,
+        icon: Fingerprint,
+      },
+    ],
+  },
 ];
 
 /**
  * Floating overlay drawer (does NOT push page content).
+ * Grouped by business priority: marketing → customers → assets.
  */
 export function RightDock({
   active,
@@ -78,7 +147,10 @@ export function RightDock({
         aria-hidden={!open}
       >
         <div className="relative flex items-center justify-between bg-[#0B0F19] px-5 py-4">
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-gradient-to-r from-cyan-400 via-indigo-500 to-purple-500" aria-hidden="true" />
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-gradient-to-r from-cyan-400 via-indigo-500 to-purple-500"
+            aria-hidden="true"
+          />
           <button
             type="button"
             className="inline-flex min-w-0 items-center px-1 py-1.5"
@@ -106,36 +178,51 @@ export function RightDock({
           </button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto bg-[#0B0F19] p-3">
-          <ul className="space-y-1">
-            {NAV.map((item) => {
-              const Icon = item.icon;
-              const isActive = active === item.id;
-              return (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onNavigate(item.id);
-                      onOpenChange(false);
-                    }}
-                    className={`olar-btn flex min-h-14 w-full items-center gap-3 rounded-xl px-4 py-3 text-right text-base transition ${
-                      isActive
-                        ? "border-s-2 border-cyan-400 bg-gradient-to-r from-cyan-500/15 to-blue-500/10 font-semibold text-cyan-400"
-                        : "font-medium text-slate-300 hover:bg-slate-900/80 hover:text-white"
-                    }`}
-                  >
-                    <Icon
-                      className={`h-5 w-5 shrink-0 ${
-                        isActive ? "text-cyan-400" : "text-slate-400"
-                      }`}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+        <nav className="flex-1 overflow-y-auto bg-[#0B0F19] py-2">
+          {SECTIONS.map((section, sectionIndex) => (
+            <div key={section.title}>
+              {sectionIndex > 0 ? (
+                <div
+                  className="my-2 border-t border-slate-800/60"
+                  aria-hidden
+                />
+              ) : null}
+              <p className="px-4 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                {section.title}
+              </p>
+              <ul>
+                {section.items.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = active === item.id;
+                  return (
+                    <li key={item.key}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onNavigate(item.id);
+                          onOpenChange(false);
+                        }}
+                        className={`olar-btn flex min-h-11 w-full items-center gap-3 px-4 py-2.5 text-right text-[15px] transition ${
+                          isActive
+                            ? "border-s-2 border-cyan-400 bg-cyan-500/10 font-semibold text-cyan-400"
+                            : "font-medium text-slate-300 hover:bg-slate-900/80 hover:text-white"
+                        }`}
+                      >
+                        <Icon
+                          className={`h-5 w-5 shrink-0 ${
+                            isActive ? "text-cyan-400" : "text-slate-400"
+                          }`}
+                        />
+                        <span className="min-w-0 flex-1 truncate">
+                          {item.label}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
         </nav>
       </aside>
     </>

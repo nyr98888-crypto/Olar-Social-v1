@@ -62,34 +62,9 @@ export function normalizeCampaignPost(
   return { title, hook: hook || title, body, cta };
 }
 
-function fallbackCampaignPosts(topic?: string): CampaignPost[] {
-  const t = (topic || "").trim().slice(0, 60);
-  const topicBit = t
-    ? `\n${t}`
-    : "";
-  return [
-    {
-      title: "\u05d4\u05e9\u05d1\u05d5\u05e2 \u05d0\u05e6\u05dc\u05e0\u05d5 \u2014 \u05de\u05d5\u05db\u05e0\u05d9\u05dd \u05dc\u05db\u05dd",
-      hook: "\u05e9\u05d9\u05e8\u05d5\u05ea \u05de\u05d4\u05d9\u05e8 \u05d1\u05d9\u05d7\u05e1 \u05d0\u05d9\u05e9\u05d9",
-      body:
-        `\u05d0\u05dd \u05d7\u05d9\u05e4\u05e9\u05ea\u05dd \u05e9\u05d9\u05e8\u05d5\u05ea \u05d0\u05de\u05d9\u05df \u05dc\u05d9\u05d3 \u05d4\u05d1\u05d9\u05ea \u2014 \u05d4\u05d2\u05e2\u05ea\u05dd \u05dc\u05de\u05e7\u05d5\u05dd \u05d4\u05e0\u05db\u05d5\u05df.${topicBit}\n\u05db\u05ea\u05d1\u05d5 \u05d1\u05d5\u05d5\u05d0\u05d8\u05e1\u05d0\u05e4 \u05d5\u05e0\u05d7\u05d6\u05d5\u05e8 \u05d1\u05de\u05d4\u05d9\u05e8\u05d5\u05ea.`,
-      cta: DEFAULT_CTA,
-    },
-    {
-      title: "\u05ea\u05d9\u05d0\u05d5\u05dd \u05de\u05d4\u05d9\u05e8 \u2014 \u05d1\u05dc\u05d9 \u05dc\u05d7\u05e5",
-      hook: "\u05d6\u05de\u05d9\u05e0\u05d5\u05ea \u05d1\u05d5\u05d5\u05d0\u05d8\u05e1\u05d0\u05e4",
-      body:
-        `\u05e0\u05e9\u05de\u05d7 \u05dc\u05ea\u05d0\u05dd \u05dc\u05db\u05dd \u05e9\u05e2\u05d4 \u05e0\u05d5\u05d7\u05d4 \u05d5\u05dc\u05ea\u05ea \u05d4\u05e6\u05e2\u05ea \u05de\u05d7\u05d9\u05e8 \u05d1\u05e8\u05d5\u05e8\u05d4.${topicBit}\n\u05e9\u05dc\u05d7\u05d5 \u05d4\u05d5\u05d3\u05e2\u05d4 \u05e7\u05e6\u05e8\u05d4 \u2014 \u05d5\u05e0\u05d7\u05d6\u05d5\u05e8.`,
-      cta: DEFAULT_CTA,
-    },
-    {
-      title: "\u05de\u05d4\u05e9\u05d8\u05d7 \u05e9\u05dc\u05e0\u05d5 \u2014 \u05d9\u05d7\u05e1 \u05e9\u05de\u05e8\u05d2\u05d9\u05e9\u05d9\u05dd",
-      hook: "\u05e2\u05e1\u05e7 \u05de\u05e7\u05d5\u05de\u05d9 \u05e9\u05d0\u05e4\u05e9\u05e8 \u05dc\u05e1\u05de\u05d5\u05da \u05e2\u05dc\u05d9\u05d5",
-      body:
-        `\u05e2\u05d1\u05d5\u05d3\u05d4 \u05e0\u05e7\u05d9\u05d9\u05d4, \u05d4\u05e1\u05d1\u05e8\u05d5\u05ea \u05d1\u05e8\u05d5\u05e8\u05d5\u05ea, \u05d5\u05d6\u05de\u05d9\u05e0\u05d5\u05ea \u05d0\u05e0\u05d5\u05e9\u05d9\u05ea.${topicBit}\n\u05db\u05ea\u05d1\u05d5 \u05dc\u05e0\u05d5 \u05d1\u05d5\u05d5\u05d0\u05d8\u05e1\u05d0\u05e4 \u05dc\u05e4\u05e8\u05d8\u05d9\u05dd.`,
-      cta: DEFAULT_CTA,
-    },
-  ];
+/** Empty — never inject canned marketing when AI fails. */
+function fallbackCampaignPosts(_topic?: string): CampaignPost[] {
+  return [];
 }
 
 /**
@@ -116,12 +91,7 @@ export function parseCampaignPosts(
           .slice(0, 3)
           .map((c, i) => normalizeCampaignPost(c, i))
           .filter((p): p is CampaignPost => Boolean(p));
-        if (posts.length >= 1) {
-          while (posts.length < 3) {
-            posts.push(fallbackCampaignPosts(topic)[posts.length]!);
-          }
-          return posts.slice(0, 3);
-        }
+        if (posts.length >= 1) return posts.slice(0, 3);
       }
       return fallbackCampaignPosts(topic);
     }
@@ -147,11 +117,7 @@ export function parseCampaignPosts(
     if (normalized) posts.push(normalized);
   }
 
-  if (posts.length === 0) return fallbackCampaignPosts(topic);
-  const fill = fallbackCampaignPosts(topic);
-  while (posts.length < 3) {
-    posts.push(fill[posts.length]!);
-  }
+  // Return only real AI posts — never pad with canned marketing templates
   return posts.slice(0, 3);
 }
 

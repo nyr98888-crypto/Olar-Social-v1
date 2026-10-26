@@ -1,7 +1,10 @@
 /**
- * Image generation — FAL.ai fal-ai/flux/schnell only.
- * Random seed via provider; hard outer timeout ~45s so chat never hangs forever.
- * All prompts go through buildFalVisualPrompt (English-only) before FAL.
+ * Image generation circuit-breaker:
+ *   1) FAL.ai fal-ai/flux/schnell — hard 7s
+ *   2) Together AI FLUX.1-schnell — hard 8s
+ *   3) Caller / route serves curated category Unsplash (static fallback)
+ *
+ * All prompts go through Art Director / English guardrail before providers.
  */
 import type { BrandDna } from "../../../schemas/agent";
 import {
@@ -15,11 +18,17 @@ import { translateToFalEnglishPrompt } from "./translate-visual-prompt";
 import {
   generateImageWithFal,
   FAL_MODEL,
+  FAL_SUBSCRIBE_TIMEOUT_MS,
 } from "./providers/fal";
-import type { GeneratedImage } from "./types";
+import {
+  generateImageWithTogether,
+  TOGETHER_IMAGE_MODEL,
+  TOGETHER_IMAGE_TIMEOUT_MS,
+} from "./providers/together";
+import type { GeneratedImage, ImageProviderId } from "./types";
 import { withTimeout } from "./with-timeout";
 
-/** Enrich Brand DNA with domain negatives before FAL (FLUX has no negative_prompt). */
+/** Enrich Brand DNA with domain negatives before Flux providers. */
 function brandDnaWithDomainNegatives(
   brandDna: BrandDna | null | undefined,
   ...sources: Array<string | null | undefined>
@@ -40,10 +49,11 @@ function brandDnaWithDomainNegatives(
   };
 }
 
-/** Hard cap matching .cursorrules (~45s) — never block chat forever. */
-const IMAGE_HARD_TIMEOUT_MS = 45_000;
+/** Outer budget ≈ FAL 7s + Together 8s (+ small slack). */
+const IMAGE_HARD_TIMEOUT_MS =
+  FAL_SUBSCRIBE_TIMEOUT_MS + TOGETHER_IMAGE_TIMEOUT_MS + 2_000;
 
-/** Subtle SVG placeholder when FAL fails and caller opts in. */
+/** Subtle SVG placeholder when providers fail and caller opts in. */
 export const IMAGE_PLACEHOLDER_DATA_URI =
   "data:image/svg+xml," +
   encodeURIComponent(
@@ -60,7 +70,12 @@ export const IMAGE_PLACEHOLDER_DATA_URI =
   );
 
 export type ImageServiceError = Error & {
-  code: "FAL_MISSING_KEY" | "FAL_TIMEOUT" | "FAL_FAILED" | "FAL_EMPTY";
+  code:
+    | "FAL_MISSING_KEY"
+    | "FAL_TIMEOUT"
+    | "FAL_FAILED"
+    | "FAL_EMPTY"
+    | "IMAGE_ALL_FAILED";
   userMessageHe: string;
 };
 
@@ -83,11 +98,15 @@ export type GenerateImageOpts = {
   brandDna?: BrandDna | null;
   businessName?: string | null;
   niche?: string | null;
+  /** Canonical business category — logging / callers; niche override at API layer. */
+  category?: string | null;
   purpose?: FalVisualPurpose | null;
-  /** When true, return placeholder URL instead of throwing on FAL failure. */
+  /** When true, return placeholder URL instead of throwing when all providers fail. */
   fallbackPlaceholder?: boolean;
   /** Prompt already ran Art Director + guardrail — skip second LLM. */
   englishReady?: boolean;
+  /** Optional seed override (regen "שנה תמונה"). */
+  seed?: number;
 };
 
 /**
@@ -141,8 +160,7 @@ export async function resolveFalEnglishPromptAsync(opts: {
 }
 
 /**
- * Generate a real FAL Flux image URL (or optional elegant placeholder).
- * Expects English-safe prompt after Art Director (or runs Art Director here).
+ * Circuit-breaker image generation: FAL (7s) → Together (8s) → throw / placeholder.
  */
 export async function generateImage(
   opts: GenerateImageOpts
@@ -152,97 +170,152 @@ export async function generateImage(
     englishReady: opts.englishReady,
   });
 
-  if (!process.env.FAL_KEY?.trim()) {
+  const hasFal = Boolean(process.env.FAL_KEY?.trim());
+  const hasTogether = Boolean(process.env.TOGETHER_API_KEY?.trim());
+
+  if (!hasFal && !hasTogether) {
     const err = toImageError(
       "FAL_MISSING_KEY",
-      "FAL_KEY is missing",
+      "FAL_KEY and TOGETHER_API_KEY missing",
       "יצירת תמונה לא מוגדרת כרגע — נסי שוב מאוחר יותר."
     );
     if (opts.fallbackPlaceholder) {
-      console.warn("[image-service] FAL_KEY missing — placeholder");
+      console.warn("[image-service] no image keys — placeholder");
       return {
         url: IMAGE_PLACEHOLDER_DATA_URI,
         seed: 0,
         prompt: englishPrompt,
+        provider: "static-fallback",
       };
     }
     throw err;
   }
 
   const started = Date.now();
-  console.log("[image-service] FAL start", {
-    model: FAL_MODEL,
-    aspectRatio: opts.aspectRatio ?? "1:1",
-    purpose: opts.purpose ?? null,
-    hadHebrew: hasHebrewScript(opts.prompt),
-  });
-
   const enrichedDna = brandDnaWithDomainNegatives(
     opts.brandDna,
     opts.prompt,
     opts.userContext,
     opts.niche
   );
+  const niche =
+    opts.niche ||
+    enrichedDna?.business_type ||
+    opts.brandDna?.business_type ||
+    null;
 
-  try {
-    const image = await withTimeout(
-      generateImageWithFal({
-        prompt: englishPrompt,
-        aspectRatio: opts.aspectRatio,
-        previousPrompt: opts.previousPrompt,
-        userContext: opts.userContext,
-        brandDna: enrichedDna,
-        businessName: opts.businessName,
-        niche: opts.niche || enrichedDna?.business_type || opts.brandDna?.business_type,
-        purpose: opts.purpose,
-      }),
-      IMAGE_HARD_TIMEOUT_MS,
-      "FAL image-service"
-    );
+  console.log("[Image Gen] circuit-breaker start", {
+    hasFal,
+    hasTogether,
+    falTimeoutMs: FAL_SUBSCRIBE_TIMEOUT_MS,
+    togetherTimeoutMs: TOGETHER_IMAGE_TIMEOUT_MS,
+    aspectRatio: opts.aspectRatio ?? "1:1",
+    purpose: opts.purpose ?? null,
+    category: opts.category ?? null,
+    niche,
+  });
 
-    if (!image?.url) {
-      throw toImageError(
-        "FAL_EMPTY",
-        "FAL returned no URL",
-        "לא התקבלה תמונה מהשרת — אפשר לנסות שוב."
+  // ── 1) Primary: FAL.ai (max 7s) ──────────────────────────────────────
+  if (hasFal) {
+    try {
+      console.log("[Image Gen] ⚡ Attempting primary: FAL.ai…");
+      const image = await withTimeout(
+        generateImageWithFal({
+          prompt: englishPrompt,
+          aspectRatio: opts.aspectRatio,
+          previousPrompt: opts.previousPrompt,
+          userContext: opts.userContext,
+          brandDna: enrichedDna,
+          businessName: opts.businessName,
+          niche,
+          purpose: opts.purpose,
+          seed: opts.seed,
+        }),
+        FAL_SUBSCRIBE_TIMEOUT_MS,
+        "FAL image-service"
+      );
+
+      if (image?.url) {
+        console.log("[Image Gen] ✅ Success via FAL.ai", {
+          latencyMs: Date.now() - started,
+        });
+        return {
+          ...image,
+          provider: (image.provider || "fal") as ImageProviderId,
+        };
+      }
+      console.warn("[Image Gen] ⚠️ FAL.ai empty URL — switching to Together");
+    } catch (falErr) {
+      console.warn(
+        "[Image Gen] ⚠️ FAL.ai timeout/fail → Together",
+        falErr instanceof Error ? falErr.message : falErr
       );
     }
-
-    console.log("[image-service] OK", {
-      latencyMs: Date.now() - started,
-      seed: image.seed,
-    });
-    return image;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const isTimeout = /timed out|timeout/i.test(msg);
-    const code: ImageServiceError["code"] = isTimeout
-      ? "FAL_TIMEOUT"
-      : "FAL_FAILED";
-    const userMessageHe = isTimeout
-      ? "יצירת התמונה ארכה יותר מדי — נסי שוב."
-      : "לא הצלחתי לייצר ויז'ואל הפעם — אפשר לנסות שוב.";
-
-    console.error("[image-service] FAILED", {
-      latencyMs: Date.now() - started,
-      code,
-      error: msg.slice(0, 200),
-    });
-
-    if (opts.fallbackPlaceholder) {
-      return {
-        url: IMAGE_PLACEHOLDER_DATA_URI,
-        seed: 0,
-        prompt: englishPrompt,
-      };
-    }
-
-    if ((err as ImageServiceError).code) throw err;
-    throw toImageError(code, msg, userMessageHe);
+  } else {
+    console.warn("[Image Gen] ⚠️ FAL_KEY missing — skipping to Together");
   }
+
+  // ── 2) Backup: Together AI FLUX (max 8s) ─────────────────────────────
+  if (hasTogether) {
+    try {
+      console.log("[Image Gen] 🔄 Switching to backup: Together AI FLUX…");
+      const image = await withTimeout(
+        generateImageWithTogether({
+          prompt: englishPrompt,
+          aspectRatio: opts.aspectRatio,
+          seed: opts.seed,
+        }),
+        TOGETHER_IMAGE_TIMEOUT_MS,
+        "Together image-service"
+      );
+
+      if (image?.url) {
+        console.log("[Image Gen] ✅ Success via Together AI", {
+          latencyMs: Date.now() - started,
+          model: TOGETHER_IMAGE_MODEL,
+        });
+        return image;
+      }
+      console.warn("[Image Gen] ⚠️ Together empty URL — static fallback");
+    } catch (togetherErr) {
+      console.error(
+        "[Image Gen] ⚠️ Together failed/timed out",
+        togetherErr instanceof Error ? togetherErr.message : togetherErr
+      );
+    }
+  } else {
+    console.warn("[Image Gen] ⚠️ TOGETHER_API_KEY missing — static fallback");
+  }
+
+  // ── 3) Soft placeholder (route prefers Unsplash category asset) ──────
+  console.log("[Image Gen] 🛡️ All providers failed", {
+    latencyMs: Date.now() - started,
+    primary: FAL_MODEL,
+  });
+
+  if (opts.fallbackPlaceholder) {
+    return {
+      url: IMAGE_PLACEHOLDER_DATA_URI,
+      seed: 0,
+      prompt: englishPrompt,
+      provider: "static-fallback",
+    };
+  }
+
+  throw toImageError(
+    "IMAGE_ALL_FAILED",
+    "FAL and Together both failed",
+    "לא הצלחתי לייצר ויז'ואל הפעם — אפשר לנסות שוב."
+  );
 }
 
-export { FAL_MODEL, IMAGE_HARD_TIMEOUT_MS, buildFalVisualPrompt };
+export {
+  FAL_MODEL,
+  IMAGE_HARD_TIMEOUT_MS,
+  FAL_SUBSCRIBE_TIMEOUT_MS,
+  TOGETHER_IMAGE_TIMEOUT_MS,
+  buildFalVisualPrompt,
+};
 export { translateToFalEnglishPrompt } from "./translate-visual-prompt";
 export {
   applyVisualPromptGuardrail,

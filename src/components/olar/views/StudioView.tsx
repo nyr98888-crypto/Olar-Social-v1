@@ -1,8 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SocialNetwork } from "@/lib/olar/types";
-import { useResolvedMyPage } from "@/lib/olar/business-profile";
+import { loadProfile, useResolvedMyPage } from "@/lib/olar/business-profile";
 import {
   loadCurrentPost,
   saveCurrentPost,
@@ -11,13 +10,35 @@ import {
 } from "@/lib/olar/current-post";
 import { useAiProgressMessages } from "@/hooks/useAiProgressMessages";
 import { C } from "@/lib/olar/ui-copy";
+import {
+  legacyNicheFromCategory,
+  normalizeCategory,
+} from "@/lib/olar/business-categories";
+import { getCategoryFallback } from "@/lib/olar/category-fallbacks";
 import { CampaignGenerator } from "@/components/olar/CampaignGenerator";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
 import { BrandGlyph } from "@/components/olar/NetworkBrand";
 import type { CampaignPost } from "@/lib/olar/campaign-posts";
+import type {
+  PlatformPosts,
+  SocialPostFields,
+} from "../../../../schemas/agent";
 import {
+  PREVIEW_CHANNEL_TABS,
+  aspectRatioForChannel,
+  formatChannelShareText,
+  networkToPreviewChannel,
+  platformToCardData,
+  previewChannelToNetwork,
+  resolvePlatforms,
+  whatsappCardShareHref,
+  type PreviewChannel,
+} from "@/lib/olar/multi-channel";
+import {
+  Copy,
   ImagePlus,
   PanelsTopLeft,
+  Share2,
   Sparkles,
   Trash2,
   Upload,
@@ -35,17 +56,6 @@ const TABS: {
   { id: "logo", labelKey: "tabLogo" },
 ];
 
-/** Preview shells only — switching must never reset image_url */
-const PREVIEW_NETWORKS: {
-  id: SocialNetwork;
-  label: string;
-  glyph: "facebook" | "instagram" | "google" | "whatsapp";
-}[] = [
-  { id: "facebook", label: "פייסבוק", glyph: "facebook" },
-  { id: "instagram", label: "אינסטגרם", glyph: "instagram" },
-  { id: "whatsapp", label: "וואטסאפ", glyph: "whatsapp" },
-];
-
 export function StudioView() {
   const { page } = useResolvedMyPage();
   const faceRef = useRef<HTMLInputElement>(null);
@@ -58,16 +68,15 @@ export function StudioView() {
   const [result, setResult] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
+  const [imageIsFallback, setImageIsFallback] = useState(false);
   const [logoMark, setLogoMark] = useState<string | null>(null);
   const [softToast, setSoftToast] = useState<string | null>(null);
-  const [previewNetwork, setPreviewNetwork] =
-    useState<SocialNetwork>("instagram");
-  const [campaignPreview, setCampaignPreview] = useState<{
-    headline: string;
-    body: string;
-    hashtags?: string[];
-    call_to_action?: string;
-  } | null>(null);
+  const [previewChannel, setPreviewChannel] =
+    useState<PreviewChannel>("whatsapp");
+  const [platforms, setPlatforms] = useState<PlatformPosts | null>(null);
+  const [campaignPreview, setCampaignPreview] =
+    useState<SocialPostFields | null>(null);
+  const [copyToast, setCopyToast] = useState<string | null>(null);
   const { message: aiProgress } = useAiProgressMessages(
     generating || imageLoading
   );
@@ -77,20 +86,19 @@ export function StudioView() {
     const stored = loadCurrentPost();
     if (stored?.image_url) setImageUrl(stored.image_url);
     if (stored?.network) {
-      const n = stored.network as SocialNetwork;
-      if (n === "facebook" || n === "instagram" || n === "whatsapp") {
-        setPreviewNetwork(n);
-      }
+      setPreviewChannel(networkToPreviewChannel(stored.network));
     }
     if (stored && (stored.headline || stored.body)) {
-      setCampaignPreview({
+      const post: SocialPostFields = {
         headline: stored.headline,
         body: stored.body,
-        hashtags: stored.hashtags,
+        hashtags: stored.hashtags || [],
         call_to_action: stored.cta,
-      });
+      };
+      setCampaignPreview(post);
+      setPlatforms(resolvePlatforms(post, page));
     }
-  }, []);
+  }, [page]);
 
   useEffect(() => {
     if (!bizName && page.businessName) setBizName(page.businessName);
@@ -100,11 +108,13 @@ export function StudioView() {
     (p: CampaignPost | null) => {
       if (!p) {
         setCampaignPreview(null);
+        setPlatforms(null);
         return;
       }
-      const next = {
+      const next: SocialPostFields = {
         headline: p.title,
         body: p.body,
+        hashtags: loadCurrentPost()?.hashtags || page.firstPost?.hashtags || [],
         call_to_action: p.cta,
       };
       setCampaignPreview((prev) => {
@@ -118,18 +128,19 @@ export function StudioView() {
         }
         return next;
       });
+      setPlatforms(resolvePlatforms(next, page));
       // Persist text; keep existing image_url
       const saved = saveCurrentPost({
         headline: p.title,
         body: p.body,
         cta: p.cta || "",
-        hashtags: loadCurrentPost()?.hashtags || page.firstPost?.hashtags || [],
+        hashtags: next.hashtags,
         offer: p.hook,
-        network: previewNetwork,
+        network: previewChannelToNetwork(previewChannel),
       });
       void syncCurrentPostToServer(saved);
     },
-    [page.firstPost?.hashtags, previewNetwork]
+    [page, previewChannel]
   );
 
   function onFace(files: FileList | null) {
@@ -139,64 +150,147 @@ export function StudioView() {
     reader.readAsDataURL(files[0]!);
   }
 
-  async function generatePostImage() {
+  async function handleRegenerateImage(opts?: {
+    descriptionOverride?: string;
+  }) {
+    const profileNiche = loadProfile()?.niche;
+    const category =
+      normalizeCategory(niche) ||
+      normalizeCategory(profileNiche) ||
+      null;
+    const nicheForApi = category
+      ? legacyNicheFromCategory(category)
+      : niche || profileNiche || page.tagline;
+    const stored = loadCurrentPost();
+    const description = (
+      opts?.descriptionOverride ||
+      prompt.trim() ||
+      [campaignPreview?.headline, campaignPreview?.body, stored?.offer]
+        .filter(Boolean)
+        .join("\n") ||
+      `${page.businessName} ${page.tagline}`.trim() ||
+      "local business"
+    ).trim();
+    const seed = Math.floor(Math.random() * 1_000_000);
+
     setImageLoading(true);
     setSoftToast(null);
-    // Do NOT clear imageUrl — previous image stays until a real URL returns
+    setImageIsFallback(false);
     try {
       const res = await fetch("/api/generate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          description:
-            prompt.trim() ||
-            `${page.businessName} ${page.tagline}`.trim() ||
-            campaignPreview?.headline ||
-            "local business",
+          prompt: description,
+          description,
+          category: category ?? undefined,
           businessName: bizName || page.businessName,
-          niche: niche || page.tagline,
+          niche: nicheForApi,
           purpose:
             tab === "headshot" ? "headshot" : tab === "banner" ? "banner" : "post",
-          aspectRatio: tab === "headshot" ? "1:1" : "16:9",
+          aspectRatio:
+            tab === "campaign"
+              ? aspectRatioForChannel(previewChannel)
+              : tab === "headshot"
+                ? "1:1"
+                : "16:9",
+          seed,
         }),
-        signal: AbortSignal.timeout(55_000),
+        signal: AbortSignal.timeout(45_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
         soft_message?: string;
         fallback?: boolean;
+        isFallback?: boolean;
         image?: { url?: string; seed?: number; prompt?: string };
+        imageUrl?: string;
       };
-      if (data.image?.url && !data.fallback) {
-        setImageUrl(data.image.url);
-        setResult(data.image.url);
-        const preview = campaignPreview || {
-          headline: bizName || page.businessName || C.myBiz,
-          body: prompt || page.tagline || page.description,
-          call_to_action: page.firstPost?.cta,
-        };
-        const saved = saveCurrentPost({
-          headline: preview.headline,
-          body: preview.body,
-          cta: preview.call_to_action || "",
-          hashtags: page.firstPost?.hashtags || [],
-          image_url: data.image.url,
-          image_seed: data.image.seed ?? null,
-          image_prompt: data.image.prompt ?? null,
-          network: previewNetwork,
-        });
-        saveCurrentPostImage({
-          image_url: data.image.url,
-          image_seed: data.image.seed ?? null,
-          image_prompt: data.image.prompt ?? null,
-        });
-        void syncCurrentPostToServer(saved);
+      let url = data.image?.url || data.imageUrl;
+      let usedClientFallback = false;
+      if (!url || url.startsWith("data:image/svg")) {
+        url = getCategoryFallback(category || profileNiche, description);
+        usedClientFallback = true;
       }
+      const asFallback =
+        Boolean(data.fallback || data.isFallback) || usedClientFallback;
+      setImageUrl(url);
+      setResult(url);
+      setImageIsFallback(asFallback);
+      const preview = campaignPreview || {
+        headline: bizName || page.businessName || "",
+        body: prompt || page.tagline || page.description || "",
+        hashtags: page.firstPost?.hashtags || [],
+        call_to_action: page.firstPost?.cta,
+      };
+      const saved = saveCurrentPost({
+        headline: preview.headline,
+        body: preview.body,
+        cta: preview.call_to_action || "",
+        hashtags: preview.hashtags || page.firstPost?.hashtags || [],
+        image_url: asFallback ? null : url,
+        image_seed: data.image?.seed ?? seed,
+        image_prompt: data.image?.prompt ?? null,
+        network: previewChannelToNetwork(previewChannel),
+      });
+      saveCurrentPostImage({
+        image_url: url,
+        image_seed: data.image?.seed ?? seed,
+        image_prompt: data.image?.prompt ?? null,
+        fallback: asFallback,
+      });
+      void syncCurrentPostToServer(saved);
       setSoftToast(data.soft_message || C.aiSoftReady);
-    } catch {
-      setSoftToast(C.aiSoftReady);
+    } catch (err) {
+      console.error("[Studio] generate-image failed", err);
+      const url = getCategoryFallback(category || profileNiche, description);
+      setImageUrl(url);
+      setResult(url);
+      setImageIsFallback(true);
+      setSoftToast(C.generateErrorRetry);
     } finally {
       setImageLoading(false);
     }
+  }
+
+  async function generatePostImage() {
+    await handleRegenerateImage();
+  }
+
+  function onPostReady(draft: {
+    headline: string;
+    body: string;
+    cta: string;
+    imagePrompt?: string;
+    userText: string;
+  }) {
+    setPrompt(draft.userText);
+    const next: SocialPostFields = {
+      headline: draft.headline,
+      body: draft.body,
+      hashtags: loadCurrentPost()?.hashtags || page.firstPost?.hashtags || [],
+      call_to_action: draft.cta,
+    };
+    setCampaignPreview(next);
+    setPlatforms(resolvePlatforms(next, page));
+    const saved = saveCurrentPost({
+      headline: draft.headline,
+      body: draft.body,
+      cta: draft.cta,
+      hashtags: next.hashtags,
+      offer: draft.userText,
+      network: previewChannelToNetwork(previewChannel),
+    });
+    void syncCurrentPostToServer(saved);
+    void handleRegenerateImage({
+      descriptionOverride: [
+        draft.userText,
+        draft.headline,
+        draft.body,
+        draft.imagePrompt,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    });
   }
 
   async function generate() {
@@ -206,23 +300,23 @@ export function StudioView() {
     setLogoMark(null);
     setSoftToast(null);
 
-    if (tab === "banner" || tab === "headshot") {
-      await generatePostImage();
-      setGenerating(false);
-      return;
-    }
-
     try {
-      await new Promise((r) => setTimeout(r, 1200));
+      if (tab === "banner" || tab === "headshot") {
+        await generatePostImage();
+        return;
+      }
+
+      await new Promise((r) => setTimeout(r, 800));
       if (tab === "logo") {
         setLogoMark((bizName.trim() || page.businessName || "A").slice(0, 1));
         setResult("logo");
       }
       setSoftToast(C.aiSoftReady);
     } catch {
-      setSoftToast(C.aiSoftReady);
+      setSoftToast(C.generateErrorRetry);
+    } finally {
+      setGenerating(false);
     }
-    setGenerating(false);
   }
 
   const placeholder =
@@ -246,12 +340,20 @@ export function StudioView() {
         ? Boolean(bizName.trim())
         : true);
 
-  const previewPost = campaignPreview || {
+  const fallbackPost: SocialPostFields = {
     headline: bizName || page.businessName || C.myBiz,
     body: prompt || page.tagline || page.description,
-    hashtags: page.firstPost?.hashtags,
+    hashtags: page.firstPost?.hashtags || [],
     call_to_action: page.firstPost?.cta,
   };
+  const activePost = campaignPreview || fallbackPost;
+  const activePlatforms =
+    platforms || resolvePlatforms(activePost, page);
+  const previewPost = platformToCardData(
+    activePost,
+    activePlatforms,
+    previewChannel
+  );
 
   // Prefer persisted FAL URL; face preview only for headshot shell when no FAL yet
   const previewImage =
@@ -263,25 +365,55 @@ export function StudioView() {
         ? face
         : null);
 
-  function selectPreviewNetwork(n: SocialNetwork) {
+  function selectPreviewChannel(ch: PreviewChannel) {
     // UI shell only — never reset image_url
-    setPreviewNetwork(n);
+    setPreviewChannel(ch);
     const stored = loadCurrentPost();
     if (stored) {
-      saveCurrentPost({ ...stored, network: n });
+      saveCurrentPost({
+        ...stored,
+        network: previewChannelToNetwork(ch),
+      });
     }
+  }
+
+  async function copyChannelText() {
+    const text = formatChannelShareText(
+      activePost,
+      activePlatforms,
+      previewChannel,
+      page
+    );
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyToast(C.platformCopied);
+      window.setTimeout(() => setCopyToast(null), 1800);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function shareChannel() {
+    if (previewChannel === "whatsapp") {
+      window.open(
+        whatsappCardShareHref(activePost, activePlatforms, page),
+        "_blank"
+      );
+      return;
+    }
+    void copyChannelText();
   }
 
   const previewCard = (
     <div className="flex w-full flex-col gap-3">
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {PREVIEW_NETWORKS.map((n) => (
+        {PREVIEW_CHANNEL_TABS.map((n) => (
           <button
             key={n.id}
             type="button"
-            onClick={() => selectPreviewNetwork(n.id)}
+            onClick={() => selectPreviewChannel(n.id)}
             className={`inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl px-3 text-sm font-medium ${
-              previewNetwork === n.id
+              previewChannel === n.id
                 ? "bg-slate-900 text-white"
                 : "border border-slate-300 bg-white text-slate-800"
             }`}
@@ -292,12 +424,40 @@ export function StudioView() {
         ))}
       </div>
       <PostCardPreview
-        network={previewNetwork}
+        network={previewChannelToNetwork(previewChannel)}
         businessName={bizName || page.businessName || C.myBiz}
+        logoUrl={page.logoUrl || page.avatarUrl}
         post={previewPost}
         imageUrl={previewImage}
         imageLoading={imageLoading}
+        isFallback={imageIsFallback}
+        onRetryImage={() => void handleRegenerateImage()}
+        waHref={
+          previewChannel === "whatsapp"
+            ? whatsappCardShareHref(activePost, activePlatforms, page)
+            : null
+        }
       />
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <button
+          type="button"
+          onClick={() => void copyChannelText()}
+          className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-base font-medium text-slate-900 hover:bg-slate-50"
+        >
+          <Copy className="h-4 w-4 text-slate-600" />
+          {copyToast || C.copyPlatformText}
+        </button>
+        {previewChannel === "whatsapp" ? (
+          <button
+            type="button"
+            onClick={shareChannel}
+            className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-[#25D366] text-base font-medium text-white hover:brightness-110"
+          >
+            <Share2 className="h-4 w-4" />
+            {C.sendWaCard || C.waSendCard}
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 
@@ -310,14 +470,11 @@ export function StudioView() {
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden lg:flex-[1.2]">
           <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-28 lg:pb-8 animate-rise">
             <header className="text-right">
-              <h1
-                className="break-words text-3xl font-bold text-slate-900"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                {C.studioTitle}
+              <h1 className="text-right text-xl font-bold text-slate-800">
+                {C.yonaTitle}
               </h1>
               <p className="mt-1 break-words text-lg text-slate-800">
-                {C.studioSub}
+                {C.studioTitle}
               </p>
             </header>
 
@@ -348,9 +505,18 @@ export function StudioView() {
                 initialTopic={
                   prompt || `${page.businessName} ${page.tagline}`.trim()
                 }
-                previewNetwork={previewNetwork}
-                onPreviewNetworkChange={selectPreviewNetwork}
+                previewNetwork={previewChannelToNetwork(previewChannel)}
+                onPreviewNetworkChange={(n) =>
+                  selectPreviewChannel(networkToPreviewChannel(n))
+                }
                 onActivePostChange={onActivePostChange}
+                onPostReady={onPostReady}
+                category={
+                  normalizeCategory(niche) ||
+                  normalizeCategory(loadProfile()?.niche) ||
+                  null
+                }
+                hideNetworkTabs
               />
             ) : null}
 

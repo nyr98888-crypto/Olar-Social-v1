@@ -26,7 +26,7 @@ export function LeadsView({
           <Users className="h-8 w-8" />
         </span>
         <p className="text-lg leading-relaxed text-slate-800">
-          {C.emptyLeads}
+          {C.emptyDashboardStats}
         </p>
         <button
           type="button"

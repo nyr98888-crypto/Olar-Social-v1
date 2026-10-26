@@ -57,73 +57,6 @@ const HINTS: Hint[] = [
   },
 ];
 
-const DEFAULT_BY_NICHE: Record<string, ProfileService[]> = {
-  garage: [
-    {
-      id: "s1",
-      title: "\u05d4\u05db\u05e0\u05ea \u05e8\u05db\u05d1 \u05dc\u05d7\u05d5\u05e8\u05e3",
-      desc: "\u05de\u05e6\u05d1\u05e8, \u05de\u05d2\u05d1\u05d9\u05dd \u05d5\u05e9\u05de\u05df",
-      price: 0,
-    },
-    {
-      id: "s2",
-      title: "\u05d1\u05d3\u05d9\u05e7\u05ea \u05d1\u05dc\u05de\u05d9\u05dd \u05d5\u05de\u05d2\u05d1\u05d9\u05dd",
-      desc: "\u05d1\u05d3\u05d9\u05e7\u05d4 \u05de\u05d4\u05d9\u05e8\u05d4 \u05d5\u05d4\u05e6\u05e2\u05ea \u05de\u05d7\u05d9\u05e8",
-      price: 0,
-    },
-  ],
-  cosmetics: [
-    {
-      id: "s1",
-      title: "\u05d8\u05d9\u05e4\u05d5\u05dc \u05e4\u05e0\u05d9\u05dd",
-      desc: "\u05d9\u05d7\u05e1 \u05d0\u05d9\u05e9\u05d9 \u05d5\u05ea\u05d9\u05d0\u05d5\u05dd \u05d1\u05d5\u05d5\u05d0\u05d8\u05e1\u05d0\u05e4",
-      price: 0,
-    },
-    {
-      id: "s2",
-      title: "\u05d8\u05d9\u05e4\u05d5\u05dc\u05d9 \u05d9\u05d5\u05e4\u05d9",
-      desc: "\u05e4\u05e8\u05d8\u05d9\u05dd \u05d5\u05d4\u05e6\u05e2\u05ea \u05de\u05d7\u05d9\u05e8 \u05d1\u05d4\u05d5\u05d3\u05e2\u05d4",
-      price: 0,
-    },
-  ],
-  interior: [
-    {
-      id: "s1",
-      title: "ייעוץ עיצוב פנים",
-      desc: "פגישת ייעוץ ראשונית — הבנת סגנון וצרכים",
-      price: 0,
-    },
-    {
-      id: "s2",
-      title: "תכנון חלל",
-      desc: "תוכנית עיצוב — חומרים, צבעים ותאורה",
-      price: 0,
-    },
-  ],
-  cafe: [
-    {
-      id: "s1",
-      title: "\u05e7\u05e4\u05d4 \u05d5\u05de\u05d0\u05e4\u05d9\u05dd",
-      desc: "\u05d4\u05d6\u05de\u05e0\u05d4 \u05d0\u05d5 \u05e9\u05d0\u05dc\u05d4 \u05d1\u05d5\u05d5\u05d0\u05d8\u05e1\u05d0\u05e4",
-      price: 0,
-    },
-  ],
-  general: [
-    {
-      id: "s1",
-      title: "\u05d9\u05d9\u05e2\u05d5\u05e5 \u05e8\u05d0\u05e9\u05d5\u05e0\u05d9",
-      desc: "\u05e9\u05d9\u05d7\u05d4 \u05e7\u05e6\u05e8\u05d4 \u05dc\u05d4\u05d1\u05e0\u05ea \u05d4\u05e6\u05d5\u05e8\u05da",
-      price: 0,
-    },
-    {
-      id: "s2",
-      title: "\u05e9\u05d9\u05e8\u05d5\u05ea \u05de\u05e7\u05e6\u05d5\u05e2\u05d9",
-      desc: "\u05e4\u05e8\u05d8\u05d9\u05dd \u05d5\u05d4\u05e6\u05e2\u05ea \u05de\u05d7\u05d9\u05e8 \u05d1\u05d5\u05d5\u05d0\u05d8\u05e1\u05d0\u05e4",
-      price: 0,
-    },
-  ],
-};
-
 /** Extract grounded price only if digits appear as currency in raw input. */
 function extractGroundedPrice(raw: string): number {
   const m = raw.match(
@@ -136,7 +69,7 @@ function extractGroundedPrice(raw: string): number {
 
 export function deriveServicesFromInput(
   raw: string,
-  nicheId: string
+  _nicheId: string
 ): ProfileService[] {
   const grounded = extractGroundedPrice(raw);
   const found: ProfileService[] = [];
@@ -153,11 +86,8 @@ export function deriveServicesFromInput(
     }
   }
 
-  if (found.length > 0) return found.slice(0, 4);
-
-  const defaults =
-    DEFAULT_BY_NICHE[nicheId] || DEFAULT_BY_NICHE.general || [];
-  return defaults.map((s) => ({ ...s, price: grounded || 0 }));
+  // Only services grounded in user words — never canned niche defaults.
+  return found.slice(0, 4);
 }
 
 export function stripServicePrices(

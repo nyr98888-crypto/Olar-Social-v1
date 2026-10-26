@@ -21,6 +21,7 @@ import {
   HEBREW_COMPOUND_NOUN_RULE_HE,
 } from "./hebrew-disambiguation";
 import { withTimeout } from "./with-timeout";
+import { resolveDishBiasedPrompt } from "./dish-prompt";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = "openai/gpt-oss-120b";
@@ -161,6 +162,8 @@ export type TranslateVisualOpts = {
   allowedVisualStyle?: string | null;
   /** When true, skip LLM and only guardrail an already-English prompt */
   englishReady?: boolean;
+  /** Business category id (food/bakery) — biases dish-specific prompts */
+  category?: string | null;
 };
 
 /**
@@ -194,14 +197,43 @@ export async function translateToFalEnglishPrompt(
 
   const preamble = artDirectorDomainPreamble(domain);
 
+  const applyDishBias = (english: string) => {
+    const dish = resolveDishBiasedPrompt({
+      description: raw,
+      niche: opts.niche,
+      category: opts.category || opts.niche,
+      existingEnglish: english,
+    });
+    return dish || english;
+  };
+
   // Already-English path (e.g. route already ran Art Director)
   if (
     opts.englishReady ||
     (raw.length >= 40 && !hasHebrewScript(raw))
   ) {
     return {
-      prompt: applyVisualPromptGuardrail(raw, category, domain),
+      prompt: applyVisualPromptGuardrail(
+        applyDishBias(raw),
+        category,
+        domain
+      ),
       source: "passthrough",
+      category,
+      domainId: domain?.id ?? null,
+    };
+  }
+
+  // Dish-first shortcut: when Hebrew names a dish, prefer curated English
+  const dishOnly = resolveDishBiasedPrompt({
+    description: raw,
+    niche: opts.niche,
+    category: opts.category || opts.niche,
+  });
+  if (dishOnly) {
+    return {
+      prompt: applyVisualPromptGuardrail(dishOnly, category, domain),
+      source: "template",
       category,
       domainId: domain?.id ?? null,
     };
@@ -211,7 +243,11 @@ export async function translateToFalEnglishPrompt(
     const fromGroq = await artDirectorGroq(raw, preamble);
     if (fromGroq && !hasHebrewScript(fromGroq)) {
       return {
-        prompt: applyVisualPromptGuardrail(fromGroq, category, domain),
+        prompt: applyVisualPromptGuardrail(
+          applyDishBias(fromGroq),
+          category,
+          domain
+        ),
         source: "groq",
         category,
         domainId: domain?.id ?? null,
@@ -220,7 +256,11 @@ export async function translateToFalEnglishPrompt(
     const fromGemini = await artDirectorGemini(raw, preamble);
     if (fromGemini && !hasHebrewScript(fromGemini)) {
       return {
-        prompt: applyVisualPromptGuardrail(fromGemini, category, domain),
+        prompt: applyVisualPromptGuardrail(
+          applyDishBias(fromGemini),
+          category,
+          domain
+        ),
         source: "gemini",
         category,
         domainId: domain?.id ?? null,
@@ -241,7 +281,11 @@ export async function translateToFalEnglishPrompt(
   });
 
   return {
-    prompt: applyVisualPromptGuardrail(prompt, category, domain),
+    prompt: applyVisualPromptGuardrail(
+      applyDishBias(prompt),
+      category,
+      domain
+    ),
     source: "template",
     category,
     domainId: domain?.id ?? null,

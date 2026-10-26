@@ -30,9 +30,9 @@ export const FAL_SUPPORTS_NEGATIVE_PROMPT = false;
 
 const FAL_MODEL = "fal-ai/flux/schnell";
 /**
- * Hard cap under image-service outer ~45s so chat never hangs forever.
+ * Circuit-breaker: FAL gets max 7s then we cut over to Together AI.
  */
-const FAL_SUBSCRIBE_TIMEOUT_MS = 40_000;
+export const FAL_SUBSCRIBE_TIMEOUT_MS = 7_000;
 
 const VARIATION_HINTS = [
   "alternate camera angle",
@@ -125,6 +125,7 @@ export async function generateImageWithFal(opts: {
   businessName?: string | null;
   niche?: string | null;
   purpose?: FalVisualPurpose | null;
+  seed?: number;
 }): Promise<GeneratedImage> {
   ensureFalConfig();
 
@@ -182,7 +183,10 @@ export async function generateImageWithFal(opts: {
     );
   }
 
-  const seed = randomFalSeed();
+  const seed =
+    typeof opts.seed === "number" && Number.isFinite(opts.seed)
+      ? Math.floor(Math.abs(opts.seed)) % 10_000_000
+      : randomFalSeed();
   // Authoritative demo default: landscape_4_3 for posts/banners; square only for headshots
   const image_size =
     opts.purpose === "headshot" || opts.purpose === "profile"
@@ -223,7 +227,7 @@ export async function generateImageWithFal(opts: {
 
   console.log("[FAL] Image URL returned:", url);
 
-  return { url, seed, prompt };
+  return { url, seed, prompt, provider: "fal" };
 }
 
 /** Exposed for test-engine seed uniqueness checks */

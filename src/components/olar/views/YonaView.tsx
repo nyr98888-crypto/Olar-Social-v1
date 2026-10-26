@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { SocialNetwork } from "@/lib/olar/types";
 import { useResolvedMyPage, loadProfile } from "@/lib/olar/business-profile";
 import {
   loadCurrentPost,
@@ -9,16 +8,14 @@ import {
   syncCurrentPostToServer,
 } from "@/lib/olar/current-post";
 import { brandGuidelinesFromBusinessProfile } from "@/lib/ai/partner-memory";
-import {
-  derivePlatformsFromPost,
-  type PlatformPosts,
-  type SocialPostFields,
-} from "../../../../schemas/agent";
-import {
-  buildWaInquiryLink,
-  buildWaOpenMessage,
-} from "@/lib/olar/connections";
+import type { PlatformPosts, SocialPostFields } from "../../../../schemas/agent";
 import { C } from "@/lib/olar/ui-copy";
+import {
+  legacyNicheFromCategory,
+  normalizeCategory,
+  type BusinessCategoryId,
+} from "@/lib/olar/business-categories";
+import { getCategoryFallback } from "@/lib/olar/category-fallbacks";
 import {
   getSpeechRecognitionCtor,
   type SpeechRecognitionLike,
@@ -26,7 +23,27 @@ import {
 import { BrandGlyph } from "../NetworkBrand";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
 import { ExampleChips } from "@/components/olar/ExampleChips";
-import { Copy, ImagePlus, Mic, Send, Sparkles } from "lucide-react";
+import { AgentAvatar } from "@/components/olar/AgentAvatar";
+import { AiSendButton } from "@/components/olar/AiSendButton";
+import {
+  PREVIEW_CHANNEL_TABS,
+  aspectRatioForChannel,
+  formatChannelShareText,
+  platformToCardData,
+  previewChannelToNetwork,
+  resolvePlatforms,
+  whatsappCardShareHref,
+  type PreviewChannel,
+} from "@/lib/olar/multi-channel";
+import {
+  Copy,
+  ImagePlus,
+  Loader2,
+  Mic,
+  Share2,
+  Sparkles,
+} from "lucide-react";
+import { stripCategoryLeak } from "@/lib/olar/strip-category";
 
 /* ── Types ─────────────────────────────────────────── */
 
@@ -35,49 +52,6 @@ type Msg = {
   content: string;
   showImageActions?: boolean;
 };
-
-type PreviewPlatform = "facebook" | "instagram" | "whatsapp" | "google";
-
-const PREVIEW_TABS: { id: PreviewPlatform; label: string }[] = [
-  { id: "instagram", label: "Instagram" },
-  { id: "facebook", label: "Facebook" },
-  { id: "whatsapp", label: "WhatsApp" },
-  { id: "google", label: "Google Business" },
-];
-
-/* ── Helpers ───────────────────────────────────────── */
-
-function platformPostData(
-  post: SocialPostFields,
-  platforms: PlatformPosts | null,
-  network: PreviewPlatform
-) {
-  const key = network === "google" ? "google_business" : network;
-  const plat = platforms?.[key as keyof PlatformPosts];
-
-  if (!plat) {
-    return {
-      headline: post.headline,
-      body: post.body,
-      hashtags: network === "instagram" ? post.hashtags : [],
-      call_to_action: post.call_to_action,
-    };
-  }
-
-  const lines = plat.text.split("\n").filter((l) => l.trim());
-  return {
-    headline: lines[0] || post.headline,
-    body: lines.slice(1).join("\n") || post.body,
-    hashtags: plat.hashtags ?? (network === "instagram" ? post.hashtags : []),
-    call_to_action: plat.cta || post.call_to_action,
-  };
-}
-
-function aspectRatioForPlatform(p: PreviewPlatform): string {
-  if (p === "instagram") return "4:5";
-  if (p === "google" || p === "facebook") return "16:9";
-  return "1:1";
-}
 
 /* ── Component ─────────────────────────────────────── */
 
@@ -95,12 +69,18 @@ export function YonaView() {
     null
   );
   const [platforms, setPlatforms] = useState<PlatformPosts | null>(null);
-  const [previewPlatform, setPreviewPlatform] =
-    useState<PreviewPlatform>("instagram");
+  const [previewChannel, setPreviewChannel] =
+    useState<PreviewChannel>("whatsapp");
 
   /* Image state */
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
+  const [imageIsFallback, setImageIsFallback] = useState(false);
+  const [selectedCategory, setSelectedCategory] =
+    useState<BusinessCategoryId | null>(null);
+  const [filledFromChip, setFilledFromChip] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState(false);
+  const [editDraft, setEditDraft] = useState("");
   const [imagePending, setImagePending] = useState(false);
   const [pendingImagePrompt, setPendingImagePrompt] = useState<string | null>(
     null
@@ -158,19 +138,13 @@ export function YonaView() {
 
   /* ── Derived ─────────────────────────────────────── */
 
-  const waPhone = page.whatsapp || "";
   const previewPost = currentPost
-    ? platformPostData(currentPost, platforms, previewPlatform)
+    ? platformToCardData(currentPost, platforms, previewChannel)
     : null;
-  const waHref = waPhone
-    ? buildWaInquiryLink(
-        waPhone,
-        buildWaOpenMessage(
-          C.waOpenMsgTopic,
-          previewPost?.headline || page.businessName
-        )
-      )
-    : null;
+  const waHref =
+    currentPost && previewChannel === "whatsapp"
+      ? whatsappCardShareHref(currentPost, platforms, page)
+      : null;
 
   /* ── Chat send (real /api/chat) ─────────────────── */
 
@@ -199,13 +173,15 @@ export function YonaView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           conversationId,
-          message: text,
+          message: stripCategoryLeak(text),
+          userText: stripCategoryLeak(text),
+          category: selectedCategory,
           brandGuidelines,
           businessProfile: profile || undefined,
           history: slidingHistory,
           previousImagePrompt: pendingImagePrompt,
         }),
-        signal: AbortSignal.timeout(55_000),
+        signal: AbortSignal.timeout(12_000),
       });
 
       const data = (await res.json()) as {
@@ -249,25 +225,32 @@ export function YonaView() {
         },
       ]);
 
-      // Handle social_post → Live Preview + persistence
-      if (socialPost) {
-        setCurrentPost(socialPost);
-        const plats =
-          socialPost.platforms ?? derivePlatformsFromPost(socialPost);
+      // Handle social_post → Live Preview + persistence (multi-channel from DNA)
+      if (socialPost?.headline?.trim() && socialPost?.body?.trim()) {
+        const cleaned = {
+          ...socialPost,
+          headline: stripCategoryLeak(socialPost.headline),
+          body: stripCategoryLeak(socialPost.body),
+          call_to_action: stripCategoryLeak(
+            socialPost.call_to_action || ""
+          ),
+        };
+        setCurrentPost(cleaned);
+        const plats = resolvePlatforms(cleaned, page);
         setPlatforms(plats);
 
         const saved = saveCurrentPost({
-          headline: socialPost.headline,
-          body: socialPost.body,
-          cta: socialPost.call_to_action || "",
-          hashtags: socialPost.hashtags,
+          headline: cleaned.headline,
+          body: cleaned.body,
+          cta: cleaned.call_to_action || "",
+          hashtags: cleaned.hashtags,
           image_url: imageUrl,
-          network: previewPlatform,
+          network: previewChannelToNetwork(previewChannel),
         });
         void syncCurrentPostToServer(saved);
       }
 
-      // Handle image already returned
+      // Handle image already returned — never clear on channel switch
       if (data.image?.url) {
         setImageUrl(data.image.url);
         setImagePending(false);
@@ -280,7 +263,7 @@ export function YonaView() {
             image_url: data.image.url,
             image_seed: data.image.seed ?? null,
             image_prompt: data.image.prompt ?? null,
-            network: previewPlatform,
+            network: previewChannelToNetwork(previewChannel),
           });
           void syncCurrentPostToServer(saved);
         }
@@ -296,9 +279,10 @@ export function YonaView() {
         );
       }
     } catch {
+      setToast(C.generateErrorRetry);
       setMessages((m) => [
         ...m,
-        { role: "assistant", content: C.chatError },
+        { role: "assistant", content: C.generateErrorRetry },
       ]);
     } finally {
       setBusy(false);
@@ -315,42 +299,68 @@ export function YonaView() {
       prompt.trim();
     if (!desc) return;
 
+    const profileNiche = loadProfile()?.niche;
+    const category =
+      selectedCategory ||
+      normalizeCategory(profileNiche) ||
+      null;
+    const nicheForApi = category
+      ? legacyNicheFromCategory(category)
+      : profileNiche;
+
+    const seed = Math.floor(Math.random() * 1_000_000);
     setImageLoading(true);
     setImagePending(false);
+    setImageIsFallback(false);
     try {
       const res = await fetch("/api/generate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description: desc,
+          prompt: desc,
           purpose: "post",
-          aspectRatio: aspectRatioForPlatform(previewPlatform),
+          aspectRatio: aspectRatioForChannel(previewChannel),
           businessName: page.businessName,
+          niche: nicheForApi,
+          category: category ?? undefined,
+          seed,
         }),
-        signal: AbortSignal.timeout(55_000),
+        signal: AbortSignal.timeout(20_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
         fallback?: boolean;
+        isFallback?: boolean;
         image?: { url?: string; seed?: number; prompt?: string };
+        imageUrl?: string;
       };
-      if (data.image?.url && !data.fallback) {
-        setImageUrl(data.image.url);
-        if (currentPost) {
-          const saved = saveCurrentPost({
-            headline: currentPost.headline,
-            body: currentPost.body,
-            cta: currentPost.call_to_action || "",
-            hashtags: currentPost.hashtags,
-            image_url: data.image.url,
-            image_seed: data.image.seed ?? null,
-            image_prompt: data.image.prompt ?? null,
-            network: previewPlatform,
-          });
-          void syncCurrentPostToServer(saved);
-        }
+      let url = data.image?.url || data.imageUrl;
+      let usedClientFallback = false;
+      if (!url || url.startsWith("data:image/svg")) {
+        url = getCategoryFallback(category || profileNiche, desc);
+        usedClientFallback = true;
+      }
+      const asFallback =
+        Boolean(data.fallback || data.isFallback) || usedClientFallback;
+      setImageUrl(url);
+      setImageIsFallback(asFallback);
+      if (currentPost) {
+        const saved = saveCurrentPost({
+          headline: currentPost.headline,
+          body: currentPost.body,
+          cta: currentPost.call_to_action || "",
+          hashtags: currentPost.hashtags,
+          image_url: asFallback ? null : url,
+          image_seed: data.image?.seed ?? null,
+          image_prompt: data.image?.prompt ?? null,
+          network: previewChannelToNetwork(previewChannel),
+        });
+        void syncCurrentPostToServer(saved);
       }
     } catch {
-      /* soft fail */
+      const url = getCategoryFallback(category || profileNiche);
+      setImageUrl(url);
+      setImageIsFallback(true);
     } finally {
       setImageLoading(false);
     }
@@ -373,7 +383,7 @@ export function YonaView() {
           cta: currentPost.call_to_action || "",
           hashtags: currentPost.hashtags,
           image_url: dataUrl,
-          network: previewPlatform,
+          network: previewChannelToNetwork(previewChannel),
         });
         void syncCurrentPostToServer(saved);
       }
@@ -381,26 +391,32 @@ export function YonaView() {
     reader.readAsDataURL(file);
   }
 
-  /* ── Copy platform text ──────────────────────────── */
+  /* ── Copy / share adapted per channel ─────────────── */
 
   async function copyPlatformText() {
-    if (!previewPost) return;
-    let text = `${previewPost.headline}\n\n${previewPost.body}`;
-    if (previewPost.hashtags?.length && previewPlatform === "instagram") {
-      text += `\n\n${previewPost.hashtags.join(" ")}`;
-    }
-    if (previewPost.call_to_action) {
-      text += `\n\n${previewPost.call_to_action}`;
-    }
-    if (previewPlatform === "whatsapp" && waHref) {
-      text += `\n${waHref}`;
-    }
+    if (!currentPost) return;
+    const text = formatChannelShareText(
+      currentPost,
+      platforms,
+      previewChannel,
+      page
+    );
     try {
       await navigator.clipboard.writeText(text);
       setToast(C.platformCopied);
     } catch {
       /* ignore */
     }
+  }
+
+  function sharePlatform() {
+    if (!currentPost) return;
+    if (previewChannel === "whatsapp") {
+      const href = whatsappCardShareHref(currentPost, platforms, page);
+      window.open(href, "_blank");
+      return;
+    }
+    void copyPlatformText();
   }
 
   /* ── Speech recognition ──────────────────────────── */
@@ -501,77 +517,157 @@ export function YonaView() {
 
   const previewCard = (
     <div className="flex w-full flex-col gap-3">
-      {/* Platform tabs */}
+      {/* Multi-channel tabs — switch never resets image_url */}
       <div className="flex gap-1.5 overflow-x-auto pb-1">
-        {PREVIEW_TABS.map((tab) => (
+        {PREVIEW_CHANNEL_TABS.map((tab) => (
           <button
             key={tab.id}
             type="button"
-            onClick={() => setPreviewPlatform(tab.id)}
+            onClick={() => setPreviewChannel(tab.id)}
             className={`inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl px-3 text-sm font-medium transition ${
-              previewPlatform === tab.id
+              previewChannel === tab.id
                 ? "bg-slate-900 text-white"
                 : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
             }`}
           >
-            <BrandGlyph
-              id={tab.id === "google" ? "google" : tab.id}
-              size={14}
-            />
+            <BrandGlyph id={tab.glyph} size={14} />
             {tab.label}
           </button>
         ))}
       </div>
 
-      {/* Preview heading */}
       <p className="text-center text-base text-slate-800">
         {C.postCardPreview}
       </p>
 
-      {/* Post card */}
-      {previewPost ? (
-        <PostCardPreview
-          network={previewPlatform as SocialNetwork}
-          businessName={page.businessName || C.myBiz}
-          post={{
-            headline: previewPost.headline,
-            body: previewPost.body,
-            hashtags: previewPost.hashtags,
-            call_to_action: previewPost.call_to_action,
-          }}
-          imageUrl={imageUrl}
-          imageLoading={imageLoading}
-          waHref={waHref}
-        />
+      {previewPost && currentPost ? (
+        <>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setEditDraft(
+                  `${currentPost.headline}\n${currentPost.body}`.trim()
+                );
+                setEditingText(true);
+              }}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium"
+            >
+              {C.editPostText}
+            </button>
+            <button
+              type="button"
+              disabled={imageLoading}
+              onClick={() => void generatePostImage()}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium disabled:opacity-50"
+            >
+              {imageLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : null}
+              {C.swapPostImage}
+            </button>
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium"
+            >
+              {C.uploadPostImage}
+            </button>
+          </div>
+          {editingText ? (
+            <div className="space-y-2">
+              <textarea
+                dir="rtl"
+                value={editDraft}
+                onChange={(e) => setEditDraft(e.target.value)}
+                className="min-h-32 w-full rounded-xl border border-slate-200 p-3 text-right text-base"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const [h, ...rest] = editDraft.split("\n");
+                  const next = {
+                    ...currentPost,
+                    headline: stripCategoryLeak(h || currentPost.headline),
+                    body: stripCategoryLeak(
+                      rest.join("\n").trim() || currentPost.body
+                    ),
+                  };
+                  setCurrentPost(next);
+                  const saved = saveCurrentPost({
+                    headline: next.headline,
+                    body: next.body,
+                    cta: next.call_to_action || "",
+                    hashtags: next.hashtags,
+                    image_url: imageUrl,
+                    network: previewChannelToNetwork(previewChannel),
+                  });
+                  void syncCurrentPostToServer(saved);
+                  setEditingText(false);
+                }}
+                className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white"
+              >
+                {C.savePostText}
+              </button>
+            </div>
+          ) : (
+            <PostCardPreview
+              network={previewChannelToNetwork(previewChannel)}
+              businessName={page.businessName || C.myBiz}
+              logoUrl={page.logoUrl || page.avatarUrl}
+              post={previewPost}
+              imageUrl={imageUrl}
+              imageLoading={imageLoading}
+              isFallback={imageIsFallback}
+              onRetryImage={() => void generatePostImage()}
+              waHref={waHref}
+            />
+          )}
+        </>
       ) : (
         <div className="flex min-h-[12rem] items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-center text-base text-slate-500">
-          {C.yonaPartnerSub}
+          {C.postPreviewEmpty}
         </div>
       )}
 
-      {/* Generate / copy buttons */}
       <button
         type="button"
-        disabled={imageLoading}
+        disabled={imageLoading || busy}
         onClick={() => void generatePostImage()}
         className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-sky-200 bg-white text-base font-medium text-slate-900 disabled:opacity-50"
       >
-        <Sparkles className="h-4 w-4 text-accent" />
+        {imageLoading ? (
+          <Loader2 className="h-4 w-4 animate-spin text-accent" />
+        ) : (
+          <Sparkles className="h-4 w-4 text-accent" />
+        )}
         {imageLoading
-          ? C.imageLoading || C.making
+          ? C.generatingPostImage
           : C.makePostImage || C.imgReady}
       </button>
 
-      {previewPost && (
-        <button
-          type="button"
-          onClick={() => void copyPlatformText()}
-          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-base font-medium text-slate-900 hover:bg-slate-50"
-        >
-          <Copy className="h-4 w-4 text-slate-600" />
-          {C.copyPlatformText}
-        </button>
-      )}
+      {previewPost && currentPost ? (
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button
+            type="button"
+            onClick={() => void copyPlatformText()}
+            className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-base font-medium text-slate-900 hover:bg-slate-50"
+          >
+            <Copy className="h-4 w-4 text-slate-600" />
+            {C.copyPlatformText}
+          </button>
+          {previewChannel === "whatsapp" ? (
+            <button
+              type="button"
+              onClick={sharePlatform}
+              className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-[#25D366] text-base font-medium text-white hover:brightness-110"
+            >
+              <Share2 className="h-4 w-4" />
+              {C.sendWaCard || C.waSendCard}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 
@@ -607,12 +703,12 @@ export function YonaView() {
                 <span className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-accent/30 bg-accent-soft px-4 text-sm font-semibold text-accent">
                   {C.humanNotBot}
                 </span>
-                <h1
-                  className="break-words text-2xl font-bold text-slate-950 sm:text-3xl"
-                  style={{ fontFamily: "var(--font-display)" }}
-                >
-                  {C.yonaTitle}
-                </h1>
+                <div className="flex items-center gap-3">
+                  <h1 className="text-right text-xl font-bold text-slate-800">
+                    {C.yonaTitle}
+                  </h1>
+                  <AgentAvatar size="md" />
+                </div>
               </div>
               <p className="text-base text-slate-600">{C.yonaPartnerSub}</p>
             </div>
@@ -669,8 +765,8 @@ export function YonaView() {
                 <div className="flex justify-start">
                   <div className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-right text-base text-slate-800">
                     <span className="inline-flex items-center gap-2">
-                      <Sparkles className="h-4 w-4 status-dot text-accent" />
-                      {C.yonaWriting}
+                      <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                      {C.generatingPostImage}
                     </span>
                   </div>
                 </div>
@@ -698,21 +794,29 @@ export function YonaView() {
                   style={{ textAlign: "right" }}
                   disabled={busy}
                 />
-                <button
-                  type="button"
+                <AiSendButton
                   onClick={() => void send()}
                   disabled={busy || !prompt.trim()}
-                  className="olar-cta flex h-14 w-14 shrink-0 items-center justify-center self-end rounded-2xl disabled:opacity-40"
-                  aria-label={C.send}
-                >
-                  <Send className="h-5 w-5" />
-                </button>
+                  loading={busy}
+                  title={C.send}
+                  className="h-14 w-14 rounded-2xl"
+                />
               </div>
 
               <ExampleChips
                 disabled={busy}
-                onSelect={(text) => {
-                  setPrompt(text);
+                selectedId={selectedCategory}
+                onSelect={(text, id) => {
+                  setSelectedCategory(id ?? null);
+                  const trimmed = prompt.trim();
+                  const canFill =
+                    !trimmed ||
+                    (filledFromChip != null &&
+                      trimmed === filledFromChip.trim());
+                  if (canFill) {
+                    setPrompt(text);
+                    setFilledFromChip(text);
+                  }
                   inputRef.current?.focus();
                 }}
               />

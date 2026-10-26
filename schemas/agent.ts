@@ -30,17 +30,59 @@ export const GeneratedPostResponseSchema = z.object({
 
 export type GeneratedPostResponse = z.infer<typeof GeneratedPostResponseSchema>;
 
-/** Single-platform adapted post (text + optional hashtags + CTA). */
+/** WhatsApp digital business card — grounded in Business DNA / profile only. */
+export const WhatsAppCardSchema = z.object({
+  name: z
+    .string()
+    .optional()
+    .describe("Business name from profile/DNA only — never invent"),
+  logo_hint: z
+    .string()
+    .optional()
+    .describe("Short Hebrew hint for logo/brand mark from profile only"),
+  services: z
+    .array(z.string())
+    .max(3)
+    .optional()
+    .describe("Up to 3 services from profile/user only"),
+  phone: z
+    .string()
+    .optional()
+    .describe("Phone from profile only — never invent"),
+});
+
+export type WhatsAppCard = z.infer<typeof WhatsAppCardSchema>;
+
+/** Single-platform adapted post (text + optional hashtags + CTA + channel extras). */
 export const PlatformPostSchema = z.object({
   text: z.string().describe("Platform-adapted post text in Hebrew"),
   hashtags: z
     .array(z.string())
     .optional()
-    .describe("Hashtags (mainly relevant for Instagram)"),
+    .describe("Hashtags — Instagram: prefer ~5 local tags from niche/city"),
   cta: z
     .string()
     .optional()
     .describe("Platform-specific CTA in Hebrew"),
+  /** WhatsApp digital card fields (name, logo hint, ≤3 services, phone). */
+  card: WhatsAppCardSchema.optional().describe(
+    "WhatsApp digital business card — profile/DNA facts only"
+  ),
+  /** Instagram 1:1 visual concept note (Hebrew for UI; FAL prompt stays English in image_task). */
+  visual_concept: z
+    .string()
+    .optional()
+    .describe("Short Hebrew note for 1:1 Instagram visual concept"),
+  /** Google Business / Facebook location line from profile only. */
+  city_or_neighborhood: z
+    .string()
+    .optional()
+    .describe("City or neighborhood from profile — never invent"),
+  /** Google Business offer line — only if user/profile supplied one. */
+  offer: z
+    .string()
+    .optional()
+    .describe("Offer text only when explicitly provided — never invent"),
 });
 
 export type PlatformPost = z.infer<typeof PlatformPostSchema>;
@@ -54,6 +96,17 @@ export const PlatformPostsSchema = z.object({
 });
 
 export type PlatformPosts = z.infer<typeof PlatformPostsSchema>;
+
+/** Optional Business DNA / profile facts for deriving platform variants. */
+export type PlatformGrounding = {
+  businessName?: string;
+  logoHint?: string;
+  services?: string[];
+  phone?: string;
+  address?: string;
+  city?: string;
+  bioUrl?: string;
+};
 
 export const SocialPostSchema = z.object({
   headline: z
@@ -157,6 +210,7 @@ export function applyGeneratedPostToAgent(
     hashtags: tags,
     call_to_action: post.callToAction,
     has_explicit_price: post.hasExplicitPrice,
+    platforms: output.social_post?.platforms ?? null,
   };
   if (output.image_task.generate_image) {
     output.image_task.prompt = post.suggestedImagePrompt;
@@ -243,16 +297,131 @@ export function isBrandDnaComplete(
   );
 }
 
-/** Derive platform-adapted posts from classic social_post fields (backward compat). */
-export function derivePlatformsFromPost(post: SocialPostFields): PlatformPosts {
-  const fullText = `${post.headline}\n\n${post.body}`;
+/**
+ * Derive platform-adapted posts from classic social_post fields (+ optional DNA grounding).
+ * Never invents services/phone/address — only uses grounding when provided.
+ * Preserves any AI-supplied platforms fields via merge when callers pass post.platforms first.
+ */
+export function derivePlatformsFromPost(
+  post: SocialPostFields,
+  grounding?: PlatformGrounding | null
+): PlatformPosts {
+  const existing = post.platforms ?? undefined;
   const cta = post.call_to_action || "";
-  return {
-    facebook: { text: fullText, cta },
-    instagram: { text: fullText, hashtags: post.hashtags, cta },
-    whatsapp: { text: `${post.headline}\n${post.body}`, cta },
-    google_business: { text: fullText, cta },
+  const fullText = `${post.headline}\n\n${post.body}`;
+  const services = (grounding?.services || []).filter(Boolean).slice(0, 3);
+  const name = grounding?.businessName?.trim() || "";
+  const phone = grounding?.phone?.trim() || "";
+  const city =
+    grounding?.city?.trim() ||
+    grounding?.address?.trim() ||
+    "";
+  const bioCta = grounding?.bioUrl?.trim()
+    ? `לפרטים נוספים בביו: ${grounding.bioUrl}`
+    : "לפרטים נוספים — לינק בביו";
+
+  const inviteLines = [post.headline.trim(), (post.body.split("\n")[0] || post.body).trim()]
+    .filter(Boolean)
+    .slice(0, 2);
+  const waInvite = inviteLines.join("\n") || post.headline;
+
+  const localTags = (post.hashtags || []).slice(0, 5);
+
+  const fbServices =
+    services.length > 0
+      ? `\n\nשירותים: ${services.join(" · ")}`
+      : "";
+  const fbAddress = grounding?.address?.trim()
+    ? `\nכתובת: ${grounding.address.trim()}`
+    : city
+      ? `\nאזור: ${city}`
+      : "";
+  const fbContact = phone ? `\nטלפון: ${phone}` : "";
+
+  const gbpBits = [
+    city ? `${city}` : "",
+    post.headline,
+    post.body.split("\n").slice(0, 2).join(" ").trim(),
+  ].filter(Boolean);
+  const gbpText = gbpBits.join(" — ").slice(0, 320);
+  const gbpCta = phone
+    ? `התקשרו עכשיו: ${phone}`
+    : cta || "צרו קשר עכשיו";
+
+  const derived: PlatformPosts = {
+    whatsapp: {
+      text: waInvite,
+      cta: "שלח כרטיס זה בוואטסאפ",
+      card: {
+        name: name || undefined,
+        logo_hint: grounding?.logoHint?.trim() || (name ? `לוגו ${name}` : undefined),
+        services: services.length ? services : undefined,
+        phone: phone || undefined,
+      },
+    },
+    instagram: {
+      text: `${post.headline}\n${post.body}`.slice(0, 280),
+      hashtags: localTags.length ? localTags : post.hashtags,
+      cta: bioCta,
+      visual_concept: "קונספט ויזואלי 1:1 — מותאם למותג",
+    },
+    facebook: {
+      text: `${fullText}${fbServices}${fbAddress}${fbContact}`.trim(),
+      cta: cta || (phone ? `לתיאום: ${phone}` : undefined),
+      city_or_neighborhood: city || undefined,
+    },
+    google_business: {
+      text: gbpText,
+      cta: gbpCta,
+      city_or_neighborhood: city || undefined,
+      offer: undefined, // never invent offers
+    },
   };
+
+  // Merge: AI-supplied platform fields win over derived defaults (text always required)
+  const mergePlat = (
+    base: PlatformPost,
+    over?: PlatformPost | null
+  ): PlatformPost => ({
+    ...base,
+    ...over,
+    text: (over?.text?.trim() || base.text).trim(),
+    card: over?.card || base.card ? { ...base.card, ...over?.card } : undefined,
+  });
+
+  return {
+    whatsapp: mergePlat(derived.whatsapp!, existing?.whatsapp),
+    instagram: mergePlat(derived.instagram!, existing?.instagram),
+    facebook: mergePlat(derived.facebook!, existing?.facebook),
+    google_business: mergePlat(
+      derived.google_business!,
+      existing?.google_business
+    ),
+  };
+}
+
+/** Build wa.me/?text= share URL for WhatsApp card (no phone required — opens picker). */
+export function buildWhatsAppCardShareUrl(shareText: string): string {
+  return `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+}
+
+/** Format WhatsApp digital card + invite into shareable Hebrew text. */
+export function formatWhatsAppCardShareText(
+  plat: PlatformPost,
+  fallbackName?: string
+): string {
+  const card = plat.card;
+  const lines: string[] = [];
+  if (plat.text?.trim()) lines.push(plat.text.trim());
+  const name = card?.name?.trim() || fallbackName?.trim();
+  if (name) lines.push(`\n📇 ${name}`);
+  if (card?.logo_hint?.trim()) lines.push(`🎨 ${card.logo_hint.trim()}`);
+  if (card?.services?.length) {
+    lines.push(`שירותים: ${card.services.filter(Boolean).slice(0, 3).join(" · ")}`);
+  }
+  if (card?.phone?.trim()) lines.push(`📞 ${card.phone.trim()}`);
+  lines.push(plat.cta?.trim() || "שלח כרטיס זה בוואטסאפ");
+  return lines.filter(Boolean).join("\n");
 }
 
 /**

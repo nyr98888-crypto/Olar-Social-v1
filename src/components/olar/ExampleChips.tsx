@@ -1,87 +1,40 @@
 "use client";
 
 import { C } from "@/lib/olar/ui-copy";
+import {
+  BUSINESS_CATEGORIES,
+  type BusinessCategoryId,
+} from "@/lib/olar/business-categories";
 
-export type NicheChipId =
-  | "interior"
-  | "clinic"
-  | "restaurant"
-  | "salon"
-  | "legal"
-  | "fitness"
-  | "renovation"
-  | "garage"
-  | "shop"
-  | "bakery"
-  | "real_estate"
-  | "wellness";
+/** @deprecated Prefer BusinessCategoryId — kept for compat. */
+export type NicheChipId = BusinessCategoryId;
+export type { BusinessCategoryId };
 
-const CHIPS: { id: NicheChipId; label: string; template: string }[] = [
-  {
-    id: "interior",
-    label: C.nicheInteriorLabel,
-    template: C.nicheInteriorTemplate,
-  },
-  {
-    id: "clinic",
-    label: C.nicheClinicLabel,
-    template: C.nicheClinicTemplate,
-  },
-  {
-    id: "restaurant",
-    label: C.nicheRestaurantLabel,
-    template: C.nicheRestaurantTemplate,
-  },
-  {
-    id: "salon",
-    label: C.nicheSalonLabel,
-    template: C.nicheSalonTemplate,
-  },
-  {
-    id: "legal",
-    label: C.nicheLegalLabel,
-    template: C.nicheLegalTemplate,
-  },
-  {
-    id: "fitness",
-    label: C.nicheFitnessLabel,
-    template: C.nicheFitnessTemplate,
-  },
-  {
-    id: "renovation",
-    label: C.nicheRenovationLabel,
-    template: C.nicheRenovationTemplate,
-  },
-  {
-    id: "garage",
-    label: C.nicheGarageLabel,
-    template: C.nicheGarageTemplate,
-  },
-  {
-    id: "shop",
-    label: C.nicheShopLabel,
-    template: C.nicheShopTemplate,
-  },
-  {
-    id: "bakery",
-    label: C.nicheBakeryLabel,
-    template: C.nicheBakeryTemplate,
-  },
-  {
-    id: "real_estate",
-    label: C.nicheRealEstateLabel,
-    template: C.nicheRealEstateTemplate,
-  },
-  {
-    id: "wellness",
-    label: C.nicheWellnessLabel,
-    template: C.nicheWellnessTemplate,
-  },
-];
+const TEMPLATES: Record<BusinessCategoryId, string> = {
+  architecture: C.nicheInteriorTemplate,
+  beauty: C.nicheClinicTemplate,
+  food: C.nicheRestaurantTemplate,
+  hair_salon: C.nicheSalonTemplate,
+  legal_accounting: C.nicheLegalTemplate,
+  fitness: C.nicheFitnessTemplate,
+  renovation: C.nicheRenovationTemplate,
+  automotive: C.nicheGarageTemplate,
+  retail: C.nicheShopTemplate,
+  bakery: C.nicheBakeryTemplate,
+  real_estate: C.nicheRealEstateTemplate,
+  wellness: C.nicheWellnessTemplate,
+};
+
+const CHIPS: { id: BusinessCategoryId; label: string; template: string }[] =
+  BUSINESS_CATEGORIES.map((c) => ({
+    id: c.id,
+    label: c.labelHe,
+    template: TEMPLATES[c.id],
+  }));
 
 type Props = {
-  onSelect: (text: string, id?: NicheChipId) => void;
-  selectedId?: NicheChipId | null;
+  onSelect: (text: string, id?: BusinessCategoryId) => void;
+  selectedId?: BusinessCategoryId | null;
   disabled?: boolean;
 };
 
@@ -98,10 +51,10 @@ export function ExampleChips({ onSelect, selectedId, disabled }: Props) {
               type="button"
               disabled={disabled}
               onClick={() => onSelect(chip.template, chip.id)}
-              className={`rounded-full border px-3.5 py-2 text-sm font-medium shadow-sm transition-all disabled:pointer-events-none disabled:opacity-40 ${
+              className={`rounded-full border px-3.5 py-2 text-sm shadow-sm transition-all disabled:pointer-events-none disabled:opacity-40 ${
                 active
-                  ? "border-cyan-500 bg-cyan-50 text-cyan-800 ring-2 ring-cyan-500/20"
-                  : "border-slate-200 bg-white text-slate-700 hover:border-cyan-400 hover:bg-cyan-50 hover:text-cyan-700"
+                  ? "border-cyan-500 bg-cyan-50/70 text-cyan-950 font-bold ring-2 ring-cyan-500/20"
+                  : "border-slate-200 bg-white font-medium text-slate-700 hover:border-cyan-400 hover:bg-cyan-50 hover:text-cyan-700"
               }`}
             >
               {chip.label}

@@ -1,7 +1,15 @@
-/** Current business post — local + session persistence (survives F5 & OAuth). */
+/** Current business post — guest: sessionStorage; auth: user_data_${id} + server sync. */
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  getCachedAuthUserId,
+  isGuestMode,
+  storageGet,
+  storageRemove,
+  storageSet,
+} from "./client-storage";
+import { stripCategoryLeak } from "./strip-category";
 
 export const CURRENT_POST_KEY = "current_business_post";
 
@@ -10,7 +18,6 @@ export type CurrentBusinessPost = {
   body: string;
   cta: string;
   hashtags: string[];
-  /** Marketing offer / promo line (optional) */
   offer?: string;
   image_url: string | null;
   image_seed?: number | null;
@@ -40,44 +47,16 @@ export function sanitizeImageUrl(
   return url ?? null;
 }
 
-function writeBoth(raw: string): void {
-  try {
-    localStorage.setItem(CURRENT_POST_KEY, raw);
-  } catch {
-    /* ignore */
-  }
-  try {
-    sessionStorage.setItem(CURRENT_POST_KEY, raw);
-  } catch {
-    /* ignore */
-  }
-}
-
-function readRaw(): string | null {
-  if (!isBrowser()) return null;
-  try {
-    const fromSession = sessionStorage.getItem(CURRENT_POST_KEY);
-    if (fromSession) return fromSession;
-  } catch {
-    /* ignore */
-  }
-  try {
-    return localStorage.getItem(CURRENT_POST_KEY);
-  } catch {
-    return null;
-  }
-}
-
 export function loadCurrentPost(): CurrentBusinessPost | null {
-  const raw = readRaw();
+  const raw = storageGet("current-post");
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as CurrentBusinessPost;
     if (!parsed || typeof parsed !== "object") return null;
     return {
-      headline: parsed.headline || "",
-      body: parsed.body || "",
-      cta: parsed.cta || "",
+      headline: stripCategoryLeak(parsed.headline || ""),
+      body: stripCategoryLeak(parsed.body || ""),
+      cta: stripCategoryLeak(parsed.cta || ""),
       hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags : [],
       offer: parsed.offer || undefined,
       image_url: sanitizeImageUrl(parsed.image_url),
@@ -97,9 +76,9 @@ export function saveCurrentPost(
 ): CurrentBusinessPost {
   const prev = loadCurrentPost();
   const next: CurrentBusinessPost = {
-    headline: patch.headline ?? prev?.headline ?? "",
-    body: patch.body ?? prev?.body ?? "",
-    cta: patch.cta ?? prev?.cta ?? "",
+    headline: stripCategoryLeak(patch.headline ?? prev?.headline ?? ""),
+    body: stripCategoryLeak(patch.body ?? prev?.body ?? ""),
+    cta: stripCategoryLeak(patch.cta ?? prev?.cta ?? ""),
     hashtags: patch.hashtags ?? prev?.hashtags ?? [],
     offer: patch.offer ?? prev?.offer,
     image_url:
@@ -117,7 +96,7 @@ export function saveCurrentPost(
     network: patch.network ?? prev?.network,
     updatedAt: new Date().toISOString(),
   };
-  writeBoth(JSON.stringify(next));
+  storageSet("current-post", JSON.stringify(next));
   if (isBrowser()) {
     try {
       window.dispatchEvent(
@@ -130,7 +109,6 @@ export function saveCurrentPost(
   return next;
 }
 
-/** Merge image fields without wiping text. */
 export function saveCurrentPostImage(opts: {
   image_url: string | null;
   image_seed?: number | null;
@@ -160,22 +138,14 @@ export function saveCurrentPostImage(opts: {
 }
 
 export function clearCurrentPost(): void {
-  try {
-    localStorage.removeItem(CURRENT_POST_KEY);
-  } catch {
-    /* ignore */
-  }
-  try {
-    sessionStorage.removeItem(CURRENT_POST_KEY);
-  } catch {
-    /* ignore */
-  }
+  storageRemove("current-post");
 }
 
-/** Persist to Supabase when authenticated (fire-and-forget). */
+/** Persist to Supabase when authenticated (fire-and-forget). Guests skip. */
 export async function syncCurrentPostToServer(
   post?: CurrentBusinessPost | null
 ): Promise<void> {
+  if (isGuestMode() || !getCachedAuthUserId()) return;
   const payload = post ?? loadCurrentPost();
   if (!payload) return;
   try {
@@ -203,7 +173,12 @@ export function useCurrentPost() {
       setPost(detail ?? loadCurrentPost());
     }
     function onStorage(e: StorageEvent) {
-      if (e.key === CURRENT_POST_KEY) setPost(loadCurrentPost());
+      if (
+        e.key === CURRENT_POST_KEY ||
+        (e.key && e.key.includes("current_business_post"))
+      ) {
+        setPost(loadCurrentPost());
+      }
     }
     window.addEventListener("olar-current-post", onCustom);
     window.addEventListener("storage", onStorage);

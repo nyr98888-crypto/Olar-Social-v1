@@ -1,16 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { storageGet, storageSet } from "./client-storage";
 
 export type WorkMode = "quick" | "full";
 
-const STORAGE_KEY = "olar-work-mode";
 const DEFAULT_MODE: WorkMode = "quick";
 
 export function readStoredWorkMode(): WorkMode {
   if (typeof window === "undefined") return DEFAULT_MODE;
   try {
-    const v = localStorage.getItem(STORAGE_KEY);
+    const v = storageGet("work-mode");
     if (v === "quick" || v === "full") return v;
   } catch {
     /* ignore */
@@ -29,11 +29,7 @@ export function useWorkMode() {
 
   useEffect(() => {
     if (!ready) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, workMode);
-    } catch {
-      /* ignore */
-    }
+    storageSet("work-mode", workMode);
   }, [workMode, ready]);
 
   function setWorkMode(next: WorkMode) {

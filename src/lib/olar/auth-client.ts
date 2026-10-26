@@ -5,6 +5,12 @@ import {
   createClient,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+import {
+  bindGuestSessionCleanup,
+  clearAllClientDrafts,
+  getCachedAuthUserId,
+  setCachedAuthUserId,
+} from "./client-storage";
 
 export type ClientAuthMode = "loading" | "guest" | "supabase";
 
@@ -18,12 +24,14 @@ export function useClientAuth() {
 
   useEffect(() => {
     let cancelled = false;
+    bindGuestSessionCleanup();
 
     async function resolve() {
       if (!isSupabaseConfigured()) {
         if (!cancelled) {
           setMode("guest");
           setUserId(null);
+          setCachedAuthUserId(null);
         }
         return;
       }
@@ -36,23 +44,27 @@ export function useClientAuth() {
         if (session?.user) {
           setMode("supabase");
           setUserId(session.user.id);
+          setCachedAuthUserId(session.user.id);
         } else {
           setMode("guest");
           setUserId(null);
+          setCachedAuthUserId(null);
         }
       } catch {
         if (!cancelled) {
           setMode("guest");
           setUserId(null);
+          setCachedAuthUserId(null);
         }
       }
     }
 
     void resolve();
 
-    if (!isSupabaseConfigured()) return () => {
-      cancelled = true;
-    };
+    if (!isSupabaseConfigured())
+      return () => {
+        cancelled = true;
+      };
 
     try {
       const supabase = createClient();
@@ -63,9 +75,11 @@ export function useClientAuth() {
         if (session?.user) {
           setMode("supabase");
           setUserId(session.user.id);
+          setCachedAuthUserId(session.user.id);
         } else {
           setMode("guest");
           setUserId(null);
+          setCachedAuthUserId(null);
         }
       });
       return () => {
@@ -89,7 +103,9 @@ export function useClientAuth() {
 }
 
 /** Start Google OAuth via Supabase; preserves current origin for callback. */
-export async function signInWithGoogle(nextPath = "/"): Promise<{ error?: string }> {
+export async function signInWithGoogle(
+  nextPath = "/"
+): Promise<{ error?: string }> {
   if (!isSupabaseConfigured()) {
     return { error: "supabase_not_configured" };
   }
@@ -113,4 +129,23 @@ export async function signInWithGoogle(nextPath = "/"): Promise<{ error?: string
       error: err instanceof Error ? err.message : "oauth_failed",
     };
   }
+}
+
+/**
+ * Sign out Supabase + wipe user_data_${id}, sessionStorage, and legacy draft keys
+ * so the next guest session starts clean.
+ */
+export async function signOutAndClear(): Promise<void> {
+  const uid = getCachedAuthUserId();
+  try {
+    if (isSupabaseConfigured()) {
+      const supabase = createClient();
+      await supabase.auth.signOut();
+    }
+  } catch {
+    /* ignore */
+  }
+  clearAllClientDrafts({ userId: uid, clearOAuthBridge: true });
+  const { clearGuestSession } = await import("@/lib/olar/client-storage");
+  clearGuestSession();
 }

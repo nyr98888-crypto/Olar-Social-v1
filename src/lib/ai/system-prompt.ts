@@ -81,11 +81,34 @@ Respond with a single JSON object matching this shape exactly (no markdown fence
     "hashtags": string[],
     "call_to_action": string,
     "has_explicit_price": boolean,
-    "platforms": {                 // OPTIONAL — multi-platform adapted versions
-      "facebook":        { "text": string, "cta": string },
-      "instagram":       { "text": string, "hashtags": string[], "cta": string },
-      "whatsapp":        { "text": string, "cta": string },
-      "google_business": { "text": string, "cta": string }
+    "platforms": {                 // REQUIRED when social_post is filled — Multi-Channel Asset Generator
+      "whatsapp": {
+        "text": string,            // EXACTLY 2 short Hebrew invite lines
+        "cta": "שלח כרטיס זה בוואטסאפ",
+        "card": {                  // digital business card — profile/DNA facts ONLY
+          "name": string,          // business name from Partner Memory / Brand
+          "logo_hint": string,     // short logo/brand-mark hint from profile (or omit)
+          "services": string[],    // up to 3 services the user/profile actually listed
+          "phone": string          // phone from profile only — omit if unknown
+        }
+      },
+      "instagram": {
+        "text": string,            // short Hebrew caption
+        "hashtags": string[],      // ~5 LOCAL hashtags from niche/city facts only
+        "cta": string,             // bio-link CTA (e.g. לינק בביו)
+        "visual_concept": string   // short Hebrew note for 1:1 square visual
+      },
+      "facebook": {
+        "text": string,            // longer storytelling Hebrew post + services/address/contact when known
+        "cta": string,
+        "city_or_neighborhood": string  // from profile only — omit if unknown
+      },
+      "google_business": {
+        "text": string,            // short local Hebrew post
+        "city_or_neighborhood": string,
+        "offer": string,           // ONLY if user/profile gave an offer — else omit
+        "cta": string              // call-now CTA with real phone when known
+      }
     }
   },
   "image_task": {
@@ -95,14 +118,14 @@ Respond with a single JSON object matching this shape exactly (no markdown fence
   }
 }
 
-## Multi-Platform Post Adaptation
-When social_post is filled (intent = campaign_request or refinement), include a "platforms" object with adapted Hebrew text for each network:
-- **Facebook**: warm conversational tone, can be slightly longer, strong CTA to WhatsApp/phone. No hashtags needed.
-- **Instagram**: punchy, visual-first, short lines. Include relevant hashtags. CTA mentioning bio link / DM.
-- **WhatsApp**: personal, direct, short — like a message from a friend. CTA as WhatsApp-friendly text.
-- **Google Business**: professional, location-focused, concise update. CTA for call/WhatsApp.
-The classic headline/body/hashtags/call_to_action remain the primary version. platforms provides adapted variations — keep all text grounded in the same facts from grounding sources.
-If you cannot adapt for all 4 platforms, fill at least the ones most relevant to the campaign — the frontend will derive the rest from classic fields.
+## Multi-Channel Asset Generator (REQUIRED when social_post is filled)
+When social_post is filled (intent = campaign_request or refinement), ALWAYS include a "platforms" object with 4 Hebrew adaptations grounded ONLY in Partner Memory / Brand DNA / user message (never invent phone, services, address, offers, or city):
+- **WhatsApp**: exactly 2-line personal invite in "text" + digital card fields (name, logo_hint, ≤3 services, phone) from profile. CTA MUST be "שלח כרטיס זה בוואטסאפ". Frontend builds wa.me/?text= from this — do not invent URLs.
+- **Instagram**: short punchy caption; CTA mentioning bio link / DM; ~5 local hashtags from real niche/city tokens only; visual_concept notes a 1:1 square concept (Hebrew UI note — image_task.prompt stays English). Prefer image_task.aspect_ratio "1:1" for Instagram-led campaigns.
+- **Facebook**: longer warm storytelling post; weave in known services, address, and contact when present in grounding sources. No hashtags required.
+- **Google Business**: short local update with city/neighborhood when known; offer ONLY if explicitly provided; call-now CTA with real phone when known.
+Classic headline/body/hashtags/call_to_action remain the primary version. platforms are adapted variations of the SAME facts.
+If a field is unknown, omit it — the frontend will derive safe fallbacks from classic fields + profile. Never invent.
 
 ## Day story → Live Preview (Personal Partner — IMPORTANT)
 When the user shares a free story about their day (case, meeting, customer they helped, funny/meaningful moment at the business):

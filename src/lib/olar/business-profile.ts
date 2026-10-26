@@ -2,11 +2,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { MY_PAGE } from "./mock-data";
 import {
   deriveServicesFromInput,
   stripServicePrices,
 } from "./derive-services";
+import {
+  clearAllClientDrafts,
+  storageGet,
+  storageSet,
+} from "./client-storage";
 
 export const ONBOARDING_KEY = "olar-onboarding-done";
 export const PROFILE_KEY = "olar-business-profile";
@@ -38,6 +42,14 @@ export type BusinessProfile = {
   services: ProfileService[];
   firstPost: FirstPost;
   rawInput: string;
+  /* ── Business DNA extensions (all optional for backward compat) ── */
+  email?: string;
+  website?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
+  logoUrl?: string;
+  avatarUrl?: string;
+  address?: string;
 };
 
 type NicheId =
@@ -51,6 +63,7 @@ type NicheId =
   | "cafe"
   | "general";
 
+/** Structural niche shells for service derivation only — NEVER used as post/preview copy. */
 const NICHES: Record<
   NicheId,
   {
@@ -346,7 +359,7 @@ const KEYWORD_MAP: { keys: string[]; niche: NicheId }[] = [
 
 export function parseBusinessInput(raw: string): { businessName: string; city: string } {
   const cleaned = raw.trim().replace(/\s+/g, " ");
-  if (!cleaned) return { businessName: "העסק שלי", city: "" };
+  if (!cleaned) return { businessName: "", city: "" };
 
   const parts = cleaned.split(" ");
   if (parts.length >= 2) {
@@ -384,48 +397,38 @@ function slugify(businessName: string, city: string): string {
 export function buildProfileFromInput(raw: string): BusinessProfile {
   const { businessName, city } = parseBusinessInput(raw);
   const nicheId = detectNiche(raw);
-  const niche = NICHES[nicheId];
-  const slug = slugify(businessName, city);
-  const phone = "050-0000000";
-  const whatsapp = "0500000000";
-  const waDigits = "972500000000";
-  const cityBit = city ? ` ב${city}` : "";
-  const body =
-    `${niche.postBody}\n\n${niche.postCta}: https://wa.me/${waDigits}\n\n— ${businessName}${cityBit}`;
+  const slug = slugify(businessName || "biz", city);
+  // Never inject canned niche marketing into firstPost — wait for AI / generate-post.
   const services = deriveServicesFromInput(raw, nicheId);
 
   return {
-    businessName,
+    businessName: businessName || "",
     city,
     niche: nicheId,
     slug,
-    tagline: niche.tagline,
-    description: niche.description,
-    phone,
-    whatsapp,
+    tagline: "",
+    description: raw.trim().slice(0, 280),
+    phone: "",
+    whatsapp: "",
     services,
     firstPost: {
-      headline: niche.postHeadline,
-      body,
-      cta: niche.postCta,
-      hashtags: ["#עסקמקומי", "#OneLoopSocial", `#${businessName.replace(/\s+/g, "")}`],
+      headline: "",
+      body: "",
+      cta: "",
+      hashtags: [],
     },
     rawInput: raw.trim(),
   };
 }
 
 export function saveProfile(profile: BusinessProfile): void {
-  try {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-  } catch {
-    /* ignore */
-  }
+  storageSet("business-profile", JSON.stringify(profile));
 }
 
 export function loadProfile(): BusinessProfile | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = localStorage.getItem(PROFILE_KEY);
+    const raw = storageGet("business-profile");
     if (!raw) return null;
     return JSON.parse(raw) as BusinessProfile;
   } catch {
@@ -434,34 +437,13 @@ export function loadProfile(): BusinessProfile | null {
 }
 
 export function markOnboardingDone(): void {
-  try {
-    localStorage.setItem(ONBOARDING_KEY, "1");
-    localStorage.setItem(WORK_MODE_KEY, "quick");
-  } catch {
-    /* ignore */
-  }
+  storageSet("onboarding-done", "1");
+  storageSet("work-mode", "quick");
 }
 
-/** Clear onboarding + profile so the 15s landing shows again. */
+/** Clear onboarding + profile so the landing shows again. */
 export function clearOnboardingSession(): void {
-  try {
-    localStorage.removeItem(ONBOARDING_KEY);
-    localStorage.removeItem(PROFILE_KEY);
-    localStorage.removeItem(WORK_MODE_KEY);
-    localStorage.removeItem("olar-yona-idea");
-    localStorage.removeItem("olar-daily-freq");
-    localStorage.removeItem("olar-onboarding-pending");
-    localStorage.removeItem("olar-onboarding-profile-backup");
-    localStorage.removeItem("olar-onboarding-post-backup");
-    localStorage.removeItem("current_business_post");
-  } catch {
-    /* ignore */
-  }
-  try {
-    sessionStorage.removeItem("current_business_post");
-  } catch {
-    /* ignore */
-  }
+  clearAllClientDrafts({ clearOAuthBridge: true });
 }
 
 export type ResolvedMyPage = {
@@ -472,42 +454,40 @@ export type ResolvedMyPage = {
   tagline: string;
   description: string;
   address: string;
+  /** City from Business DNA when known — preferred over address for grounding. */
+  city?: string;
   phone: string;
   whatsapp: string;
   mapsUrl: string;
   wazeUrl: string;
-  rating: number;
-  weekVisits: number;
   services: ProfileService[];
-  gallery: typeof MY_PAGE.gallery;
   firstPost?: FirstPost;
+  /* Business DNA extras */
+  email?: string;
+  website?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
+  logoUrl?: string;
+  avatarUrl?: string;
 };
 
 export function resolveMyPage(profile?: BusinessProfile | null): ResolvedMyPage {
   const p = profile ?? loadProfile();
   if (!p) {
+    // No profile at all — return empty shell (guest / empty DB)
     return {
-      slug: MY_PAGE.slug,
-      url: MY_PAGE.url,
-      live: MY_PAGE.live,
-      businessName: MY_PAGE.businessName,
-      tagline: MY_PAGE.tagline,
-      description: MY_PAGE.description,
-      address: MY_PAGE.address,
-      phone: MY_PAGE.phone,
-      whatsapp: MY_PAGE.whatsapp,
-      mapsUrl: MY_PAGE.mapsUrl,
-      wazeUrl: MY_PAGE.wazeUrl,
-      rating: MY_PAGE.rating,
-      weekVisits: 0,
-      services: stripServicePrices([...MY_PAGE.services]),
-      gallery: MY_PAGE.gallery,
-      firstPost: {
-        headline: MY_PAGE.tagline,
-        body: MY_PAGE.description,
-        cta: "\u05dc\u05ea\u05d9\u05d0\u05d5\u05dd \u05d5\u05d4\u05e6\u05e2\u05ea \u05de\u05d7\u05d9\u05e8 \u05d1\u05d5\u05d5\u05d0\u05d8\u05e1\u05d0\u05e4",
-        hashtags: ["#\u05e2\u05e1\u05e7\u05de\u05e7\u05d5\u05de\u05d9"],
-      },
+      slug: "",
+      url: "",
+      live: false,
+      businessName: "",
+      tagline: "",
+      description: "",
+      address: "",
+      phone: "",
+      whatsapp: "",
+      mapsUrl: "",
+      wazeUrl: "",
+      services: [],
     };
   }
   const cityQ = encodeURIComponent(p.city || p.businessName);
@@ -522,16 +502,20 @@ export function resolveMyPage(profile?: BusinessProfile | null): ResolvedMyPage 
     businessName: p.businessName,
     tagline: p.tagline,
     description: p.description,
-    address: p.city || MY_PAGE.address,
+    address: p.address || p.city || "",
+    city: p.city?.trim() || undefined,
     phone: p.phone,
     whatsapp: p.whatsapp,
     mapsUrl: `https://maps.google.com/?q=${cityQ}`,
     wazeUrl: `https://waze.com/ul?q=${cityQ}`,
-    rating: MY_PAGE.rating,
-    weekVisits: 0,
     services,
-    gallery: MY_PAGE.gallery,
     firstPost: p.firstPost,
+    email: p.email,
+    website: p.website,
+    instagramUrl: p.instagramUrl,
+    facebookUrl: p.facebookUrl,
+    logoUrl: p.logoUrl,
+    avatarUrl: p.avatarUrl,
   };
 }
 

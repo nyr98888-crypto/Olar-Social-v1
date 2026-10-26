@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { AgentOutput, BrandGuidelines } from "../../../schemas/agent";
 import {
   buildNicheFallbackOutput,
+  FALLBACK_SOFT_FAIL_HE,
   FALLBACK_SOFT_READY_HE,
   type FallbackBizContext,
 } from "./fallback-content";
@@ -30,7 +31,7 @@ export function softAiFallbackJson(opts: {
   return NextResponse.json({
     ok: true,
     fallback: true,
-    soft_message: FALLBACK_SOFT_READY_HE,
+    soft_message: FALLBACK_SOFT_FAIL_HE,
     conversationId: opts.conversationId ?? `guest-${Date.now()}`,
     message: assistantMsg,
     output,
