@@ -14,8 +14,6 @@ import {
 
 export const runtime = "nodejs";
 
-const PLATFORMS: SocialPlatform[] = ["facebook", "instagram"];
-
 function isPlatform(v: unknown): v is SocialPlatform {
   return v === "facebook" || v === "instagram";
 }
@@ -163,5 +161,3 @@ export async function PATCH(request: Request) {
     account: result.public,
   });
 }
-
-export { PLATFORMS };
