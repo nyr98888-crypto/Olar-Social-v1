@@ -11,6 +11,7 @@ export type SemanticDomainId =
   | "accounting"
   | "locksmith"
   | "cosmetics"
+  | "creative_studio"
   | "automotive"
   | "food";
 
@@ -213,24 +214,79 @@ export const SEMANTIC_DOMAINS: SemanticDomain[] = [
     nicheId: "cosmetics",
   },
   {
+    id: "creative_studio",
+    englishDomain: "Creative Arts and Crafts Studio",
+    hebrewLabel: "סדנת יצירה / סטודיו אומנות",
+    positiveVisual:
+      "A smiling Israeli woman artist in a sunlit creative arts and crafts studio, surrounded by colorful handmade crafts, pottery, paintbrushes and canvas, warm bright natural light, inspiring creative atmosphere, 8k commercial photography, photorealistic",
+    negatives: [
+      "handyman",
+      "construction worker",
+      "power drill",
+      "mechanic",
+      "garage",
+      "carpentry",
+      "flannel shirt",
+      "hardhat",
+      "industrial workshop",
+      "male worker",
+      "auto repair",
+      "spray booth",
+    ],
+    // Longer craft compounds first — NEVER bare סדנה alone (ambiguous with industrial)
+    triggers: [
+      "סדנאות יצירה",
+      "סדנת יצירה",
+      "סדנאות אומנות",
+      "סדנת אומנות",
+      "סטודיו יצירה",
+      "סטודיו אומנות",
+      "חוג ציור",
+      "סדנת ציור",
+      "קרמיקה",
+      "פיסול",
+      "arts and crafts",
+      "creative workshop",
+      "art studio",
+      "craft studio",
+    ],
+    nicheId: "courses",
+  },
+  {
     id: "automotive",
     englishDomain: "Automotive Garage and Vehicle Service",
-    hebrewLabel: "מוסך / רכב",
+    hebrewLabel: "מוסך / פחחות וצבע",
     positiveVisual:
-      "Brightly lit modern auto workshop, spotless epoxy floor, gleaming car on hydraulic lift, mechanic at work, crisp commercial daylight, 35mm, high-end commercial ad, sharp focus, 4k",
+      "Professional automotive paint booth workshop, a technician in protective gear expertly spray painting a car panel with a professional paint gun, bright clean workshop lighting, hyper-realistic reflections on fresh wet metallic car paint, crisp 8k commercial photography, depth of field",
     negatives: [
+      "dark alley",
+      "generic showroom",
+      "video game render",
+      "low quality",
+      "broken parts",
+      "sports car night scene",
       "beauty clinic",
       "skincare",
       "restaurant kitchen",
       "hair salon",
+      "arts and crafts studio",
+      "pottery",
     ],
     triggers: [
+      "פחחות וצבע",
+      "פחחות",
+      "תא צבע",
+      "צביעת רכב",
+      "צבע רכב",
       "מוסך",
       "מכונאי",
       "צמיגים",
+      "body shop",
+      "paint booth",
       "garage",
       "auto mechanic",
       "רכב",
+      // Do NOT add bare "סדנה" / "workshop" — craft studio owns those phrases
     ],
     nicheId: "garage",
   },
@@ -396,6 +452,14 @@ export function applyDomainPromptGuardrail(
       /\b(burglar|thief|robbery|crime\s*scene|violence|breaking\s*and\s*entering)\b/gi,
       "professional locksmith"
     );
+  }
+  if (domain.id === "creative_studio") {
+    next = next
+      .replace(
+        /\b(handyman|construction\s*worker|power\s*drill|mechanic|garage|carpentry|hardhat|industrial\s*workshop|auto\s*repair|spray\s*booth)\b/gi,
+        "creative arts studio"
+      )
+      .replace(/\bworkshop\b/gi, "arts and crafts studio");
   }
 
   // Ensure domain-positive anchor is present

@@ -20,6 +20,7 @@ export type VisualCategory =
   | "PAINTING"
   | "ACCOUNTING"
   | "LOCKSMITH"
+  | "CREATIVE_STUDIO"
   | "GENERAL_TRADE";
 
 /** @deprecated use VisualCategory — kept for callers mapping GoldenNiche */
@@ -63,6 +64,8 @@ export const CATEGORY_BLUEPRINTS: Record<VisualCategory, string> = {
     "Professional accounting and finance business office, desk with documents and laptop, clean contemporary workspace, trustworthy commercial photography, bright daylight",
   LOCKSMITH:
     "Professional certified locksmith service, locksmith opening a residential door with professional tools, trustworthy trades photography, bright daylight, clean commercial ad",
+  CREATIVE_STUDIO:
+    "A smiling Israeli woman artist in a sunlit creative arts and crafts studio, surrounded by colorful handmade crafts, pottery, paintbrushes and canvas, warm bright natural light, inspiring creative atmosphere, 8k commercial photography, photorealistic",
   GENERAL_TRADE:
     "Professional tradesman in modern bright home interior, quality tools, natural light, commercial service photography",
 };
@@ -74,6 +77,7 @@ const DOMAIN_TO_CATEGORY: Record<SemanticDomainId, VisualCategory> = {
   accounting: "ACCOUNTING",
   locksmith: "LOCKSMITH",
   cosmetics: "BEAUTY",
+  creative_studio: "CREATIVE_STUDIO",
   automotive: "AUTOMOTIVE",
   food: "FOOD",
 };
@@ -86,6 +90,7 @@ const CATEGORY_TO_DOMAIN_ID: Partial<Record<VisualCategory, SemanticDomainId>> =
     ACCOUNTING: "accounting",
     LOCKSMITH: "locksmith",
     BEAUTY: "cosmetics",
+    CREATIVE_STUDIO: "creative_studio",
     AUTOMOTIVE: "automotive",
     FOOD: "food",
   };

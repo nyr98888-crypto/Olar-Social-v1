@@ -7,7 +7,8 @@ export type OlarView =
   | "reviews"
   | "analytics"
   | "mypage"
-  | "settings";
+  | "settings"
+  | "dna";
 
 export type SocialNetwork =
   | "facebook"

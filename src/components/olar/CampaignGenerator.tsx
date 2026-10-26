@@ -1,20 +1,42 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SocialNetwork } from "@/lib/olar/types";
 import { C } from "@/lib/olar/ui-copy";
-import {
-  isCampaignPostsArray,
-  type CampaignPost,
-} from "@/lib/olar/campaign-posts";
+import type { CampaignPost } from "@/lib/olar/campaign-posts";
 import { useAiProgressMessages } from "@/hooks/useAiProgressMessages";
 import { BrandGlyph } from "@/components/olar/NetworkBrand";
 import { AiSendButton } from "@/components/olar/AiSendButton";
-import { Copy, Loader2 } from "lucide-react";
-import { stripCategoryLeak } from "@/lib/olar/strip-category";
+import { Loader2 } from "lucide-react";
+import {
+  sanitizeMarketingCopy,
+  sanitizeVariationCopy,
+} from "@/lib/olar/sanitize-marketing-copy";
 import type { BusinessCategoryId } from "@/lib/olar/business-categories";
+import {
+  VAR_1_LABEL,
+  VAR_2_LABEL,
+  normalizeVariationId,
+  type CampaignVariation,
+  type VariationId,
+} from "@/lib/olar/ab-variations";
+import {
+  appendStudioMessage,
+  setStudioLoading,
+  setStudioMeta,
+  setStudioPostType,
+  setStudioVariations,
+  useStudioStore,
+} from "@/lib/store";
+import { ContentPillarTabs } from "@/components/olar/ContentPillarTabs";
+import {
+  postTypeDefaultCtas,
+  postTypePlaceholder,
+  type PostTypeId,
+} from "@/lib/olar/post-types";
+import { consumeWingmanChipPrefill } from "@/hooks/useWingmanGreeting";
+import { isBlockedStudioChatReply } from "@/lib/ai/golden-templates";
 
-/** Preview shells only — switching never regenerates / clears image_url */
 const NET_TAGS: {
   id: SocialNetwork;
   label: string;
@@ -26,7 +48,20 @@ const NET_TAGS: {
   { id: "google", label: "Google Business", glyph: "google" },
 ];
 
-type ChatBubble = { role: "user" | "assistant"; content: string };
+const QUICK_SENDS = [
+  { id: "offer", label: "עדכון מבצע", text: "תכיני פוסט עם עדכון מבצע אטרקטיבי לעסק שלי" },
+  { id: "tip", label: "טיפ מקצועי", text: "תכיני פוסט עם טיפ מקצועי שימושי ללקוחות שלי" },
+] as const;
+
+export type StudioPostData = {
+  headline: string;
+  body: string;
+  cta: string;
+  imagePrompt?: string;
+  imageUrl?: string | null;
+  userText: string;
+  variationId?: VariationId;
+};
 
 export function CampaignGenerator({
   initialTopic = "",
@@ -34,184 +69,290 @@ export function CampaignGenerator({
   onPreviewNetworkChange,
   onActivePostChange,
   onPostReady,
+  onVariationsReady,
   category,
+  businessName,
   hideNetworkTabs = false,
 }: {
   initialTopic?: string;
   previewNetwork?: SocialNetwork;
   onPreviewNetworkChange?: (n: SocialNetwork) => void;
   onActivePostChange?: (post: CampaignPost | null) => void;
-  /** Fired after generate-post succeeds — parent should refresh preview + image */
-  onPostReady?: (draft: {
-    headline: string;
-    body: string;
-    cta: string;
-    imagePrompt?: string;
-    userText: string;
-  }) => void;
+  onPostReady?: (draft: StudioPostData) => void;
+  onVariationsReady?: (
+    variations: CampaignVariation[],
+    userText: string
+  ) => void;
   category?: BusinessCategoryId | null;
+  businessName?: string;
   hideNetworkTabs?: boolean;
 }) {
-  const [topic, setTopic] = useState(initialTopic);
-  const [busy, setBusy] = useState(false);
-  const [posts, setPosts] = useState<CampaignPost[] | null>(null);
-  const [copied, setCopied] = useState<number | null>(null);
+  const studio = useStudioStore();
+  const [inputPrompt, setInputPrompt] = useState("");
+  const [imageAnchorWords, setImageAnchorWords] = useState("");
+  const [seeded, setSeeded] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [activeIdx, setActiveIdx] = useState(0);
-  const [chat, setChat] = useState<ChatBubble[]>([]);
   const [localNet, setLocalNet] = useState<SocialNetwork>(
     previewNetwork || "instagram"
   );
+  const sendingRef = useRef(false);
+  const busy = studio.isLoading;
   const { message: aiProgress } = useAiProgressMessages(busy);
 
   const network = previewNetwork ?? localNet;
+  const chat = studio.messages;
+  const postType = studio.postType;
+  const pillarPlaceholder = postTypePlaceholder(postType);
+  const defaultCtas = postTypeDefaultCtas(postType);
+
+  function onPostTypeChange(id: PostTypeId) {
+    setStudioPostType(id);
+  }
 
   useEffect(() => {
     if (previewNetwork) setLocalNet(previewNetwork);
   }, [previewNetwork]);
 
   useEffect(() => {
-    if (initialTopic && !topic) setTopic(initialTopic);
-  }, [initialTopic, topic]);
+    if (!seeded && initialTopic.trim()) {
+      setInputPrompt(initialTopic);
+      setSeeded(true);
+    }
+  }, [initialTopic, seeded]);
+
+  // Wingman chip → set postType + prefill prompt once
+  useEffect(() => {
+    const prefill = consumeWingmanChipPrefill();
+    if (!prefill) return;
+    setStudioPostType(prefill.postType);
+    if (prefill.promptHint?.trim()) {
+      setInputPrompt(prefill.promptHint.trim());
+      setSeeded(true);
+    }
+  }, []);
 
   useEffect(() => {
-    const safe =
-      posts && isCampaignPostsArray(posts) ? posts.slice(0, 3) : null;
-    if (safe && safe[activeIdx]) {
-      onActivePostChange?.(safe[activeIdx]!);
-    }
-  }, [posts, activeIdx, onActivePostChange]);
+    setStudioMeta({
+      businessName: businessName || "",
+      category: category || "",
+    });
+  }, [businessName, category]);
 
   function setNetwork(n: SocialNetwork) {
     setLocalNet(n);
     onPreviewNetworkChange?.(n);
   }
 
-  async function generate() {
-    const userMessage = stripCategoryLeak(topic.trim());
-    if (!userMessage) {
-      setToast(C.landNeedInput || "כתבו כמה מילים על העסק");
+  function applyVariation(v: CampaignVariation, userText: string) {
+    const campaignPost: CampaignPost = {
+      title: v.headline,
+      hook: "",
+      body: v.bodyText,
+      cta: v.ctaButton,
+    };
+    onActivePostChange?.(campaignPost);
+    onPostReady?.({
+      headline: v.headline,
+      body: v.bodyText,
+      cta: v.ctaButton,
+      imagePrompt: v.imagePrompt,
+      imageUrl: v.imageUrl || null,
+      userText,
+      variationId: v.id,
+    });
+  }
+
+  async function handleSendMessage(overrideText?: string) {
+    const userMessage = sanitizeMarketingCopy(
+      (overrideText ?? inputPrompt).trim()
+    );
+    if (!userMessage || busy || sendingRef.current) {
+      if (!userMessage && !overrideText) {
+        setToast(C.landNeedInput || "כתבו כמה מילים על העסק");
+      }
       return;
     }
 
-    setBusy(true);
-    setPosts(null);
+    sendingRef.current = true;
+    // Clear textarea immediately; append user bubble; set loading
+    setInputPrompt("");
     setToast(null);
-    setActiveIdx(0);
-    setChat((c) => [...c, { role: "user", content: userMessage }]);
+    appendStudioMessage({ role: "user", content: userMessage });
+    setStudioLoading(true);
 
     try {
-      const res = await fetch("/api/generate-post", {
+      const res = await fetch("/api/studio/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           userText: userMessage,
           prompt: userMessage,
           category: category ?? undefined,
+          businessName: businessName || undefined,
+          postType,
+          imageAnchorWords: imageAnchorWords.trim() || undefined,
         }),
-        signal: AbortSignal.timeout(45_000),
+        signal: AbortSignal.timeout(90_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
+        replyMessage?: string;
+        chat_reply?: string;
+        soft_message?: string;
+        error?: string;
+        variations?: Array<{
+          id?: string;
+          label?: string;
+          headline?: string;
+          bodyText?: string;
+          ctaButton?: string;
+          imageUrl?: string | null;
+          imagePrompt?: string;
+          hashtags?: string[];
+        }>;
+        post?: {
+          headline?: string;
+          bodyText?: string;
+          body?: string;
+          ctaButton?: string;
+          imageUrl?: string | null;
+          imagePrompt?: string;
+        };
+        postData?: {
+          headline?: string;
+          bodyText?: string;
+          body?: string;
+          ctaButton?: string;
+          imageUrl?: string | null;
+          imagePrompt?: string;
+        };
         headline?: string;
         bodyText?: string;
         ctaButton?: string;
         imagePrompt?: string;
-        soft_message?: string;
-        error?: string;
-        chat_reply?: string;
+        imageUrl?: string | null;
       };
 
       if (!res.ok || data.ok === false) {
-        console.error("[CampaignGenerator] generate-post failed", {
-          status: res.status,
-          errData: data,
+        // Soft retry only on true hard failure — never lecture about ready-made text
+        const rawErr = (data.error || C.generateErrorRetry).trim();
+        const hardFail = isBlockedStudioChatReply(rawErr)
+          ? C.generateErrorRetry
+          : rawErr.replace(
+              /בלי טקסט מוכן מראש\.?|טקסט מוכן מראש\.?|לא הצלחתי לייצר פוסט כרגע\.?/gi,
+              ""
+            ).trim() || C.generateErrorRetry;
+        appendStudioMessage({
+          role: "assistant",
+          content: hardFail,
         });
-        setChat((c) => [
-          ...c,
-          {
-            role: "assistant",
-            content:
-              data.error ||
-              C.generateErrorRetry ||
-              "חלה שגיאה בייצור, אנא נסה שנית",
-          },
-        ]);
-        setToast(data.error || C.generateErrorRetry);
-        return;
-      }
-
-      const headline = stripCategoryLeak(data.headline || "").trim();
-      const body = stripCategoryLeak(data.bodyText || "").trim();
-      const cta = stripCategoryLeak(data.ctaButton || "").trim();
-
-      if (!headline || !body) {
-        setChat((c) => [
-          ...c,
-          {
-            role: "assistant",
-            content: C.generateErrorRetry,
-          },
-        ]);
         setToast(C.generateErrorRetry);
         return;
       }
 
-      const jachnunHint = /ג['׳]?חנון|jachnun/i.test(userMessage);
-      const agentLine =
+      let replyMessage =
+        data.replyMessage?.trim() ||
         data.chat_reply?.trim() ||
-        (jachnunHint
-          ? "הנה הפוסט והתמונה שהכנתי עבור הג'חנון של דניאל לשבת!"
-          : `הנה הפוסט והתמונה שהכנתי עבור ${headline}!`);
-      setChat((c) => [...c, { role: "assistant", content: agentLine }]);
+        "הכנו שתי אופציות שונות — בחרו את מה שמדבר אליכם!";
+      if (isBlockedStudioChatReply(replyMessage)) {
+        replyMessage =
+          "הכנו שתי אופציות שונות — בחרו את מה שמדבר אליכם!";
+      }
 
-      const campaignPost: CampaignPost = {
-        title: headline,
-        hook: "",
-        body,
-        cta: cta || "לתיאום בוואטסאפ",
-      };
-      setPosts([campaignPost]);
-      onActivePostChange?.(campaignPost);
-      onPostReady?.({
-        headline,
-        body,
-        cta: campaignPost.cta,
-        imagePrompt: data.imagePrompt,
-        userText: userMessage,
-      });
-      setToast(data.soft_message || C.campaignReady || C.aiSoftReady);
-    } catch (err) {
-      console.error("[CampaignGenerator] generate threw", err);
-      setChat((c) => [
-        ...c,
-        {
+      const single =
+        data.post || data.postData || null;
+
+      let nextVars: CampaignVariation[] = [];
+      if (Array.isArray(data.variations) && data.variations.length >= 2) {
+        nextVars = data.variations.slice(0, 2).map((v, i) => {
+          const cleaned = sanitizeVariationCopy({
+            headline: v.headline || "",
+            bodyText: v.bodyText || "",
+            ctaButton: v.ctaButton || "",
+            fallbackCta: i === 0 ? defaultCtas.var1 : defaultCtas.var2,
+          });
+          return {
+            id: normalizeVariationId(v.id, i),
+            label: v.label || (i === 0 ? VAR_1_LABEL : VAR_2_LABEL),
+            headline: cleaned.headline,
+            bodyText: cleaned.bodyText,
+            ctaButton: cleaned.ctaButton || (i === 0 ? defaultCtas.var1 : defaultCtas.var2),
+            imagePrompt: v.imagePrompt || "",
+            imageUrl: v.imageUrl || null,
+            hashtags: v.hashtags || [],
+          };
+        });
+      } else {
+        const cleaned = sanitizeVariationCopy({
+          headline: single?.headline || data.headline || "",
+          bodyText:
+            single?.bodyText || single?.body || data.bodyText || "",
+          ctaButton: single?.ctaButton || data.ctaButton || "",
+          fallbackCta: defaultCtas.var1,
+        });
+        const headline = cleaned.headline;
+        const body = cleaned.bodyText;
+        if (!headline || !body) {
+          appendStudioMessage({
+            role: "assistant",
+            content: C.generateErrorRetry,
+          });
+          setToast(C.generateErrorRetry);
+          return;
+        }
+        nextVars = [
+          {
+            id: "var_1",
+            label: VAR_1_LABEL,
+            headline,
+            bodyText: body,
+            ctaButton: cleaned.ctaButton || defaultCtas.var1,
+            imagePrompt: single?.imagePrompt || data.imagePrompt || "",
+            imageUrl: single?.imageUrl || data.imageUrl || null,
+          },
+          {
+            id: "var_2",
+            label: VAR_2_LABEL,
+            headline,
+            bodyText: body,
+            ctaButton: defaultCtas.var2,
+            imagePrompt: single?.imagePrompt || data.imagePrompt || "",
+            imageUrl: single?.imageUrl || data.imageUrl || null,
+          },
+        ];
+      }
+
+      if (!nextVars[0]?.headline || !nextVars[0]?.bodyText) {
+        appendStudioMessage({
           role: "assistant",
           content: C.generateErrorRetry,
-        },
-      ]);
+        });
+        setToast(C.generateErrorRetry);
+        return;
+      }
+
+      // Maya bubble + central store — live preview updates instantly (never Missing Card)
+      appendStudioMessage({ role: "assistant", content: replyMessage });
+      setStudioVariations(nextVars as [CampaignVariation, CampaignVariation]);
+      onVariationsReady?.(nextVars, userMessage);
+      applyVariation(nextVars[0]!, userMessage);
+      const softToast =
+        data.soft_message && !isBlockedStudioChatReply(data.soft_message)
+          ? data.soft_message
+          : C.abOptionsHeader || "שתי אופציות מוכנות — שתיהן בתצוגה המקדימה";
+      setToast(softToast);
+    } catch (err) {
+      console.error("[CampaignGenerator] generate threw", err);
+      appendStudioMessage({
+        role: "assistant",
+        content: C.generateErrorRetry,
+      });
       setToast(C.generateErrorRetry);
     } finally {
-      setBusy(false);
+      setStudioLoading(false);
+      sendingRef.current = false;
     }
   }
-
-  async function copyPost(p: CampaignPost, index: number) {
-    const text = [p.title, p.hook, p.body, p.cta].filter(Boolean).join("\n\n");
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(index);
-      window.setTimeout(() => setCopied(null), 1600);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  const safePosts =
-    posts && isCampaignPostsArray(posts) ? posts.slice(0, 3) : null;
-
-  const netForIndex = (i: number): SocialNetwork =>
-    NET_TAGS[i % NET_TAGS.length]?.id || "instagram";
 
   return (
     <div className="w-full space-y-4 text-right" dir="rtl">
@@ -239,11 +380,11 @@ export function CampaignGenerator({
         </div>
       ) : null}
 
-      {chat.length > 0 ? (
+      {chat.length > 0 || busy ? (
         <div className="max-h-48 space-y-2 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3">
           {chat.map((m, i) => (
             <div
-              key={`${m.role}-${i}`}
+              key={`${m.role}-${i}-${m.content.slice(0, 12)}`}
               className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
@@ -258,38 +399,76 @@ export function CampaignGenerator({
             </div>
           ))}
           {busy ? (
-            <p className="flex items-center gap-2 text-sm text-accent">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {aiProgress || C.generatingPostImage}
-            </p>
+            <div className="flex justify-start">
+              <p className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-accent">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {aiProgress || "מכינה שתי אופציות..."}
+              </p>
+            </div>
           ) : null}
         </div>
       ) : null}
 
+      <div className="flex flex-wrap gap-2">
+        {QUICK_SENDS.map((q) => (
+          <button
+            key={q.id}
+            type="button"
+            disabled={busy}
+            onClick={() => void handleSendMessage(q.text)}
+            className="rounded-full border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-cyan-400 hover:bg-cyan-50 hover:text-cyan-800 disabled:opacity-40"
+          >
+            {q.label}
+          </button>
+        ))}
+      </div>
+
+      <ContentPillarTabs
+        value={postType}
+        onChange={onPostTypeChange}
+        disabled={busy}
+      />
+
       <label className="block text-base font-medium text-slate-900">
         {C.tellUs}
-        <div className="mt-2 flex gap-2" dir="rtl">
+        <div className="mt-2 space-y-2" dir="rtl">
           <textarea
             dir="rtl"
-            value={topic}
-            onChange={(e) => setTopic(e.target.value)}
+            value={inputPrompt}
+            onChange={(e) => setInputPrompt(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                void generate();
+                void handleSendMessage();
               }
             }}
-            placeholder={C.phCampaign || C.placeholder}
-            className="min-h-28 min-w-0 flex-1 break-words rounded-2xl border border-sky-100 bg-white p-4 text-right text-base leading-relaxed text-slate-800 outline-none focus:border-accent focus:ring-2 focus:ring-accent"
+            placeholder={pillarPlaceholder || C.phCampaign || C.placeholder}
+            className="min-h-28 w-full break-words rounded-2xl border border-sky-100 bg-white p-4 text-right text-base leading-relaxed text-slate-800 outline-none focus:border-accent focus:ring-2 focus:ring-accent"
             disabled={busy}
           />
-          <AiSendButton
-            onClick={() => void generate()}
-            disabled={busy || !topic.trim()}
-            loading={busy}
-            title={C.send}
-            className="h-14 w-14 self-end rounded-2xl"
-          />
+          <div className="w-full text-right">
+            <div className="mb-1 flex items-center gap-1.5 text-xs text-slate-500">
+              <span className="font-bold text-slate-700">💡 רוצים תמונה בול?</span>
+              <span>זרקו 3-4 מילים על מה שנראה (אופציונלי):</span>
+            </div>
+            <input
+              type="text"
+              value={imageAnchorWords}
+              onChange={(e) => setImageAnchorWords(e.target.value)}
+              placeholder="למשל: סטודיו מואר עם צבעים, צלחת חמה על עץ, רכב מבריק..."
+              disabled={busy}
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 transition-all focus:border-cyan-500 focus:bg-white focus:outline-none disabled:opacity-50"
+            />
+          </div>
+          <div className="flex justify-start">
+            <AiSendButton
+              onClick={() => void handleSendMessage()}
+              disabled={busy || !inputPrompt.trim()}
+              loading={busy}
+              title={C.send}
+              className="h-14 w-14 rounded-2xl"
+            />
+          </div>
         </div>
       </label>
 
@@ -303,76 +482,6 @@ export function CampaignGenerator({
         >
           {toast}
         </p>
-      ) : null}
-
-      {safePosts ? (
-        <ul className="grid w-full gap-4 md:grid-cols-1">
-          {safePosts.map((p, i) => {
-            if (
-              typeof p.title !== "string" ||
-              p.title.length < 2 ||
-              typeof p.body !== "string" ||
-              p.body.length < 4
-            ) {
-              return null;
-            }
-            const tagNet = netForIndex(i);
-            const tagLabel =
-              NET_TAGS.find((n) => n.id === tagNet)?.label || tagNet;
-            return (
-              <li
-                key={`campaign-post-${i}-${p.title.slice(0, 12)}`}
-                className={`flex flex-col rounded-2xl border bg-white p-4 text-right shadow-lg shadow-slate-200/40 ${
-                  activeIdx === i
-                    ? "border-accent ring-2 ring-accent"
-                    : "border-sky-100"
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveIdx(i);
-                    setNetwork(tagNet);
-                  }}
-                  className="w-full text-right"
-                >
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-800">
-                    <BrandGlyph
-                      id={
-                        NET_TAGS.find((n) => n.id === tagNet)?.glyph ||
-                        "instagram"
-                      }
-                      size={12}
-                    />
-                    {tagLabel}
-                  </span>
-                  <h3
-                    className="mt-2 break-words text-lg font-bold text-slate-950"
-                    style={{ fontFamily: "var(--font-display)" }}
-                  >
-                    {p.title}
-                  </h3>
-                  <p className="mt-3 flex-1 whitespace-pre-line break-words text-base leading-relaxed text-slate-800">
-                    {p.body}
-                  </p>
-                  <p className="mt-3 break-words text-sm font-semibold text-emerald-700">
-                    {p.cta}
-                  </p>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void copyPost(p, i)}
-                  className="mt-4 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 text-base font-medium text-slate-900 hover:bg-accent-soft"
-                >
-                  <Copy className="h-4 w-4" />
-                  {copied === i
-                    ? C.postCopied || C.copied
-                    : C.copyPost || C.copied}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
       ) : null}
     </div>
   );

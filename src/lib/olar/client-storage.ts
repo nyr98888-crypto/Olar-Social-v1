@@ -198,6 +198,12 @@ export function clearGuestSession(): void {
   clearGuestSessionStorage();
   clearLegacyLocalDraftKeys();
   setCachedAuthUserId(null);
+  try {
+    // Dynamic import avoided here (sync path) — drop studio key explicitly
+    sessionStorage.removeItem("olar-studio-session");
+  } catch {
+    /* ignore */
+  }
 }
 
 /**

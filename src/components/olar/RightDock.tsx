@@ -1,11 +1,15 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { OlarView } from "@/lib/olar/types";
 import { C } from "@/lib/olar/ui-copy";
+import { fetchCalendarEvents } from "@/lib/olar/calendar-client";
 import {
   Bot,
-  CalendarDays,
+  CalendarCheck,
   Clapperboard,
   Eye,
   Fingerprint,
@@ -21,6 +25,10 @@ type NavItem = {
   id: OlarView;
   label: string;
   icon: typeof Bot;
+  /** When set, navigates via Next.js Link (full route) instead of SPA view switch */
+  href?: string;
+  /** Show live count / green pulse for operational items */
+  showLiveBadge?: boolean;
 };
 
 type NavSection = {
@@ -41,8 +49,10 @@ const SECTIONS: NavSection[] = [
       {
         key: "calendar",
         id: "calendar",
-        label: C.calendarTitle,
-        icon: CalendarDays,
+        label: C.navCalendarWork || "יומן עבודה ופגישות",
+        icon: CalendarCheck,
+        href: "/calendar",
+        showLiveBadge: true,
       },
       {
         key: "campaigns",
@@ -89,16 +99,29 @@ const SECTIONS: NavSection[] = [
         id: "settings",
         label: C.navConnectNetworks,
         icon: Link2,
+        href: "/settings",
       },
       {
         key: "dna",
-        id: "settings",
+        id: "dna",
         label: C.navDnaSettings,
         icon: Fingerprint,
+        href: "/dna",
       },
     ],
   },
 ];
+
+function navItemClass(isActive: boolean, prominent = false): string {
+  if (isActive) {
+    return prominent
+      ? "border-r-2 border-cyan-400 bg-cyan-500/10 font-bold text-cyan-400"
+      : "border-r-2 border-cyan-400 bg-cyan-500/10 font-bold text-cyan-400";
+  }
+  return prominent
+    ? "font-semibold text-slate-100 hover:bg-slate-900/80 hover:text-white"
+    : "font-medium text-slate-300 hover:bg-slate-900/80 hover:text-white";
+}
 
 /**
  * Floating overlay drawer (does NOT push page content).
@@ -115,6 +138,55 @@ export function RightDock({
   onOpenChange: (v: boolean) => void;
   onNavigate: (v: OlarView) => void;
 }) {
+  const pathname = usePathname();
+  const [activeEventCount, setActiveEventCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBadge() {
+      try {
+        const { events } = await fetchCalendarEvents();
+        if (cancelled) return;
+        const upcoming = events.filter(
+          (e) =>
+            e.status === "scheduled" &&
+            new Date(e.start_time).getTime() >= Date.now() - 60 * 60 * 1000
+        );
+        setActiveEventCount(upcoming.length);
+      } catch {
+        /* soft */
+      }
+    }
+    void loadBadge();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, pathname]);
+
+  function closeDrawer() {
+    onOpenChange(false);
+  }
+
+  function isItemActive(item: NavItem): boolean {
+    if (item.href === "/calendar" || item.id === "calendar") {
+      return pathname === "/calendar" || active === "calendar";
+    }
+    if (item.href === "/dna" || item.id === "dna") {
+      return pathname === "/dna" || active === "dna";
+    }
+    if (item.href === "/settings" || item.key === "networks") {
+      return pathname?.startsWith("/settings") || active === "settings";
+    }
+    if (
+      pathname === "/calendar" ||
+      pathname === "/dna" ||
+      pathname?.startsWith("/settings")
+    ) {
+      return false;
+    }
+    return active === item.id;
+  }
+
   return (
     <>
       <div
@@ -127,7 +199,7 @@ export function RightDock({
         className={`fixed inset-0 z-50 bg-slate-950/40 transition-opacity duration-300 ${
           open ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
-        onClick={() => onOpenChange(false)}
+        onClick={closeDrawer}
         aria-hidden={!open}
       />
 
@@ -156,7 +228,7 @@ export function RightDock({
             className="inline-flex min-w-0 items-center px-1 py-1.5"
             onClick={() => {
               onNavigate("home");
-              onOpenChange(false);
+              closeDrawer();
             }}
             aria-label="One Loop Social — בית"
           >
@@ -170,7 +242,7 @@ export function RightDock({
           </button>
           <button
             type="button"
-            onClick={() => onOpenChange(false)}
+            onClick={closeDrawer}
             className="flex h-12 w-12 items-center justify-center rounded-xl text-slate-400 transition hover:text-white"
             aria-label={C.close}
           >
@@ -193,30 +265,68 @@ export function RightDock({
               <ul>
                 {section.items.map((item) => {
                   const Icon = item.icon;
-                  const isActive = active === item.id;
+                  const isActive = isItemActive(item);
+                  const prominent = item.key === "calendar";
+                  const className = `olar-btn flex min-h-11 w-full items-center gap-3 px-4 py-2.5 text-right text-[15px] transition ${navItemClass(
+                    isActive,
+                    prominent
+                  )}`;
+
+                  const badge =
+                    item.showLiveBadge ? (
+                      <span className="ms-auto inline-flex shrink-0 items-center gap-1.5">
+                        {activeEventCount > 0 ? (
+                          <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-cyan-500/20 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300">
+                            {activeEventCount > 99 ? "99+" : activeEventCount}
+                          </span>
+                        ) : (
+                          <span
+                            className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]"
+                            title="יומן פעיל"
+                            aria-hidden
+                          />
+                        )}
+                      </span>
+                    ) : null;
+
+                  const content = (
+                    <>
+                      <Icon
+                        className={`h-5 w-5 shrink-0 ${
+                          isActive ? "text-cyan-400" : "text-slate-400"
+                        }`}
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {item.label}
+                      </span>
+                      {badge}
+                    </>
+                  );
+
                   return (
                     <li key={item.key}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onNavigate(item.id);
-                          onOpenChange(false);
-                        }}
-                        className={`olar-btn flex min-h-11 w-full items-center gap-3 px-4 py-2.5 text-right text-[15px] transition ${
-                          isActive
-                            ? "border-s-2 border-cyan-400 bg-cyan-500/10 font-semibold text-cyan-400"
-                            : "font-medium text-slate-300 hover:bg-slate-900/80 hover:text-white"
-                        }`}
-                      >
-                        <Icon
-                          className={`h-5 w-5 shrink-0 ${
-                            isActive ? "text-cyan-400" : "text-slate-400"
-                          }`}
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {item.label}
-                        </span>
-                      </button>
+                      {item.href ? (
+                        <Link
+                          href={item.href}
+                          onClick={closeDrawer}
+                          className={className}
+                          aria-current={isActive ? "page" : undefined}
+                        >
+                          {content}
+                        </Link>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onNavigate(item.id);
+                            closeDrawer();
+                          }}
+                          className={className}
+                          aria-current={isActive ? "page" : undefined}
+                        >
+                          {content}
+                        </button>
+                      )}
                     </li>
                   );
                 })}

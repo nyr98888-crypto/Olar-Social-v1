@@ -4,13 +4,23 @@ import { useCallback, useEffect, useState } from "react";
 import type { AccountKind, IntegrationId } from "./types";
 import { CONNECTED_DEFAULT } from "./mock-data";
 import { useClientAuth } from "./auth-client";
+import {
+  DEFAULT_PUBLISH_MODE,
+  kindToPublishMode,
+  type PublishMode,
+} from "./social-accounts";
 
 export type ConnEntry = {
   connected: boolean;
   handle: string;
   phone: string;
   kind: AccountKind | null;
+  /** Profile / page URL for assisted personal handoff */
   pageUrl: string;
+  /** Dual-track: api_business | assisted_personal (defaults safer personal) */
+  mode?: PublishMode;
+  /** Meta page id for api_business — token stays server-side */
+  pageId?: string;
 };
 
 export type ConnectionsState = Record<IntegrationId, ConnEntry>;
@@ -35,12 +45,25 @@ function withPageUrl(
   const out = {} as ConnectionsState;
   for (const id of Object.keys(base) as IntegrationId[]) {
     const row = base[id];
+    const kind = row.kind;
+    const mode: PublishMode =
+      id === "facebook" || id === "instagram"
+        ? kindToPublishMode(kind)
+        : DEFAULT_PUBLISH_MODE;
     out[id] = {
       connected: row.connected,
       handle: row.handle,
       phone: row.phone,
-      kind: row.kind,
-      pageUrl: "pageUrl" in row ? String((row as { pageUrl?: string }).pageUrl ?? "") : "",
+      kind,
+      pageUrl:
+        "pageUrl" in row
+          ? String((row as { pageUrl?: string }).pageUrl ?? "")
+          : "",
+      mode:
+        id === "facebook" || id === "instagram"
+          ? mode
+          : undefined,
+      pageId: "",
     };
   }
   return out;
@@ -56,6 +79,11 @@ function emptyConnections(): ConnectionsState {
       phone: "",
       kind: null,
       pageUrl: "",
+      mode:
+        id === "facebook" || id === "instagram"
+          ? DEFAULT_PUBLISH_MODE
+          : undefined,
+      pageId: "",
     };
   }
   return out;
@@ -151,7 +179,7 @@ export function networkToIntegration(
   return map[network] ?? null;
 }
 
-/** Full automation: Google, or FB/IG in business page mode */
+/** Full automation: Google, or FB/IG in api_business mode */
 export function hasFullAutomation(
   networks: ConnectionsState,
   socialNetwork: string
@@ -160,7 +188,11 @@ export function hasFullAutomation(
   if (!id) return false;
   if (id === "google") return networks.google.connected;
   if (id === "facebook" || id === "instagram") {
-    return networks[id].connected && networks[id].kind === "business";
+    const entry = networks[id];
+    const mode =
+      entry.mode ??
+      (entry.kind === "business" ? "api_business" : "assisted_personal");
+    return entry.connected && mode === "api_business";
   }
   return false;
 }
@@ -171,7 +203,11 @@ export function isPersonalPublish(
 ): boolean {
   const id = networkToIntegration(socialNetwork);
   if (id !== "facebook" && id !== "instagram") return false;
-  return networks[id].connected && networks[id].kind === "personal";
+  const entry = networks[id];
+  const mode =
+    entry.mode ??
+    (entry.kind === "business" ? "api_business" : "assisted_personal");
+  return entry.connected && mode === "assisted_personal";
 }
 
 export function digitsToWaMe(phone: string): string {

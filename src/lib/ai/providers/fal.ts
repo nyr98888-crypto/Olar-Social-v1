@@ -185,7 +185,7 @@ export async function generateImageWithFal(opts: {
 
   const seed =
     typeof opts.seed === "number" && Number.isFinite(opts.seed)
-      ? Math.floor(Math.abs(opts.seed)) % 10_000_000
+      ? Math.floor(Math.abs(opts.seed)) % 2147483647
       : randomFalSeed();
   // Authoritative demo default: landscape_4_3 for posts/banners; square only for headshots
   const image_size =

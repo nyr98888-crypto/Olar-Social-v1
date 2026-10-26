@@ -35,6 +35,8 @@ import {
 } from "@/lib/olar/business-categories";
 import { getCategoryFallback } from "@/lib/olar/category-fallbacks";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
+import { DEFAULT_POST_TYPE } from "@/lib/olar/post-types";
+import { FooterBrand } from "@/components/olar/FooterBrand";
 import { Loader2, MessageCircle, Phone, Sparkles, X } from "lucide-react";
 
 export function useOnboardingGate() {
@@ -75,11 +77,11 @@ const LINE_MS = 2300;
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const [phase, setPhase] = useState<Phase>("land");
   const [input, setInput] = useState("");
+  const [imageAnchorWords, setImageAnchorWords] = useState("");
   const [selectedCategory, setSelectedCategory] =
     useState<BusinessCategoryId | null>(null);
   /** Last chip template auto-filled into textarea (for overwrite guard). */
   const [filledFromChip, setFilledFromChip] = useState<string | null>(null);
-  const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
   const [lineIdx, setLineIdx] = useState(0);
@@ -151,7 +153,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       .filter(Boolean)
       .join("\n")
       .trim();
-    const seed = Math.floor(Math.random() * 1_000_000);
+    const { randomImageSeed, withRegenAngleHint, bustImageUrl } = await import(
+      "@/lib/olar/image-cache-bust"
+    );
+    const randomSeed = randomImageSeed();
+    const updatedPrompt = withRegenAngleHint(desc);
     setPostImageLoading(true);
     setImageIsFallback(false);
     let usedClientFallback = false;
@@ -160,8 +166,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          description: desc,
-          prompt: desc,
+          description: updatedPrompt,
+          prompt: updatedPrompt,
           businessName: p.businessName,
           niche: category
             ? legacyNicheFromCategory(category)
@@ -169,9 +175,12 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           category: category ?? undefined,
           purpose: "post",
           aspectRatio: "1:1",
-          seed,
+          seed: randomSeed,
+          bustCache: Date.now(),
+          regenerate: true,
+          imageAnchorWords: imageAnchorWords.trim() || undefined,
         }),
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(45_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
         fallback?: boolean;
@@ -185,17 +194,18 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         url = getCategoryFallback(category || p.niche, desc);
         usedClientFallback = true;
       }
+      url = bustImageUrl(url) || url;
       const asFallback = serverFallback || usedClientFallback;
       setPostImageUrl(url);
       setImageIsFallback(asFallback);
       saveCurrentPostImage({
         image_url: url,
-        image_seed: data.image?.seed ?? seed,
+        image_seed: data.image?.seed ?? randomSeed,
         image_prompt: data.image?.prompt ?? null,
         fallback: asFallback,
       });
       persistPostDraft(p, url, {
-        seed: data.image?.seed ?? seed,
+        seed: data.image?.seed ?? randomSeed,
         prompt: data.image?.prompt ?? null,
         fallback: asFallback,
       });
@@ -216,13 +226,21 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     }
   }
 
-  function onChipSelect(text: string, id?: BusinessCategoryId) {
-    setSelectedCategory(id ?? null);
+  function onChipSelect(text: string, id?: BusinessCategoryId | null) {
+    setSelectedCategory((prev) => {
+      if (id == null) return null;
+      return prev === id ? null : id;
+    });
     if (id) storageSet("selected-category", id);
     const trimmed = input.trim();
     const canFill =
       !trimmed || (filledFromChip != null && trimmed === filledFromChip.trim());
-    if (canFill) {
+    if (id == null) {
+      if (canFill) {
+        setInput("");
+        setFilledFromChip(null);
+      }
+    } else if (canFill) {
       setInput(text);
       setFilledFromChip(text);
     }
@@ -259,7 +277,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           userText: raw,
           category: selectedCategory,
           city: local.city || undefined,
-          goal: selectedGoal,
+          postType: DEFAULT_POST_TYPE,
+          imageAnchorWords: imageAnchorWords.trim() || undefined,
         }),
         signal: AbortSignal.timeout(45_000),
       });
@@ -319,8 +338,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         body: JSON.stringify({
           userText: raw,
           category: selectedCategory,
-          goal: selectedGoal,
           city: local.city || undefined,
+          postType: DEFAULT_POST_TYPE,
         }),
         signal: AbortSignal.timeout(45_000),
       });
@@ -471,7 +490,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-[80] overflow-x-hidden overflow-y-auto bg-slate-50 px-4 py-8 sm:px-6"
+      className={
+        phase === "land"
+          ? "fixed inset-0 z-[80] overflow-hidden overflow-x-hidden bg-slate-50"
+          : "fixed inset-0 z-[80] overflow-x-hidden overflow-y-auto bg-slate-50 px-4 py-8 sm:px-6"
+      }
       dir="rtl"
     >
       <input
@@ -486,38 +509,25 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       />
 
       {phase === "land" && (
-        <div className="mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-5xl flex-col justify-center">
-          <div className="space-y-6 text-center sm:text-right">
-            <div className="flex flex-col items-center gap-3 sm:items-start">
-              <div className="inline-flex items-center rounded-xl bg-[#070b16] px-3 py-2">
-                <Image
-                  src="/one-loop-logo.png?v=2"
-                  alt="One Loop Social"
-                  width={215}
-                  height={120}
-                  priority
-                  className="h-10 w-auto object-contain"
-                />
-              </div>
-              <p className="text-sm font-semibold tracking-wide text-accent">
-                One Loop Social · olar.me
-              </p>
+        <div className="mx-auto flex h-[100dvh] max-h-[100dvh] w-full max-w-5xl flex-col overflow-hidden px-4 py-4">
+          <div className="flex min-h-0 flex-1 flex-col justify-center gap-2 text-center">
+            {/* 1. Logo + H1 */}
+            <div className="flex flex-col items-center">
+              <Image
+                src="/logo.png"
+                alt="One Loop Social"
+                width={215}
+                height={120}
+                priority
+                className="mx-auto mb-2 h-16 w-auto object-contain drop-shadow-sm md:h-20"
+              />
+              <h1 className="mb-3 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">
+                {C.landH1}
+              </h1>
             </div>
-            <h1
-              className="break-words text-3xl font-black leading-tight text-slate-950"
-              style={{ fontFamily: "var(--font-display)" }}
-            >
-              {C.landH1}
-            </h1>
-            <p className="break-words text-lg leading-relaxed text-slate-700">
-              {C.landSub}
-            </p>
-            <ExampleChips
-              selectedId={selectedCategory}
-              onSelect={onChipSelect}
-            />
 
-            <div className="space-y-2 text-right">
+            {/* 2. Compact action center */}
+            <div className="mx-auto w-full max-w-2xl space-y-2 text-right">
               <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
@@ -532,19 +542,17 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 >
                   {C.clearFieldBtn}
                 </button>
-                <span className="text-sm font-medium text-slate-600">
-                  {C.landInputLabel}
-                </span>
+                {selectedCategory ? (
+                  <div className="inline-flex items-center rounded-full border border-cyan-500 bg-cyan-50/70 px-2.5 py-0.5 text-xs font-bold text-cyan-950">
+                    {C.campaignForCategory} {categoryLabel(selectedCategory)}
+                  </div>
+                ) : null}
               </div>
-              {selectedCategory ? (
-                <div className="inline-flex items-center rounded-full border border-cyan-500 bg-cyan-50/70 px-3 py-1 text-sm font-bold text-cyan-950">
-                  {C.campaignForCategory} {categoryLabel(selectedCategory)}
-                </div>
-              ) : null}
               <label className="block">
                 <span className="sr-only">{C.landInputLabel}</span>
                 <textarea
                   ref={inputRef}
+                  rows={3}
                   value={input}
                   onChange={(e) => {
                     setInput(e.target.value);
@@ -562,65 +570,56 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                     }
                   }}
                   placeholder={C.landPlaceholder}
-                  className="min-h-[140px] w-full resize-y rounded-2xl border border-slate-200 bg-white p-4 text-base shadow-sm outline-none placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
+                  className="h-24 w-full resize-none rounded-2xl border border-slate-200 bg-white p-3 text-sm leading-relaxed shadow-sm outline-none placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20"
                 />
               </label>
-            </div>
 
-            {/* CTA directly under textarea — primary action before goals */}
-            {softToast && phase === "land" ? (
-              <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-center text-sm font-medium text-amber-900">
-                {softToast}
-              </p>
-            ) : null}
+              <div className="w-full text-right">
+                <div className="mb-1 flex flex-wrap items-center gap-1 text-xs text-slate-500">
+                  <span className="font-bold text-slate-700">
+                    💡 רוצים תמונה בול?
+                  </span>
+                  <span>זרקו 3-4 מילים על מה שנראה (אופציונלי):</span>
+                </div>
+                <input
+                  type="text"
+                  value={imageAnchorWords}
+                  onChange={(e) => setImageAnchorWords(e.target.value)}
+                  placeholder="למשל: סטודיו מואר עם צבעים, צלחת חמה על עץ, רכב מבריק..."
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700 transition-all placeholder:text-slate-400 focus:border-cyan-500 focus:bg-white focus:outline-none"
+                />
+              </div>
 
-            <div className="flex flex-col items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void startMagic()}
-                className="inline-flex min-h-12 w-full items-center justify-center rounded-full bg-gradient-to-r from-cyan-600 to-blue-600 px-8 text-lg font-bold text-white shadow-lg shadow-cyan-600/25 transition-all hover:shadow-xl hover:shadow-cyan-600/30 hover:brightness-110 sm:w-auto"
-              >
-                {C.landCta}
-              </button>
-              <p className="max-w-md text-center text-xs leading-relaxed text-slate-500">
-                {C.landCtaReassurance}
-              </p>
-            </div>
+              {softToast ? (
+                <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-xs font-medium text-amber-900">
+                  {softToast}
+                </p>
+              ) : null}
 
-            {/* Goals are secondary — below the main CTA */}
-            <div className="space-y-3 text-right">
-              <p className="text-sm font-semibold text-slate-700">
-                {C.goalSectionTitle}
-              </p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {(
-                  [
-                    { key: "new_clients", label: C.goalNewClients },
-                    { key: "fill_schedule", label: C.goalFillSchedule },
-                    { key: "expertise", label: C.goalExpertise },
-                    { key: "launch", label: C.goalLaunch },
-                  ] as const
-                ).map((goal) => (
-                  <button
-                    key={goal.key}
-                    type="button"
-                    onClick={() =>
-                      setSelectedGoal((prev) =>
-                        prev === goal.key ? null : goal.key
-                      )
-                    }
-                    className={`rounded-xl border px-4 py-3 text-right text-sm font-medium transition-all ${
-                      selectedGoal === goal.key
-                        ? "border-cyan-500 bg-cyan-50/50 text-cyan-800 shadow-sm"
-                        : "border-slate-200 bg-white text-slate-700 hover:border-cyan-300 hover:bg-cyan-50/30"
-                    }`}
-                  >
-                    {goal.label}
-                  </button>
-                ))}
+              <div className="flex flex-col items-center gap-1 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => void startMagic()}
+                  className="inline-flex min-h-12 w-full items-center justify-center rounded-full bg-gradient-to-r from-cyan-600 to-blue-600 px-8 text-base font-bold text-white shadow-lg shadow-cyan-600/25 transition-all hover:shadow-xl hover:shadow-cyan-600/30 hover:brightness-110"
+                >
+                  {C.landCta}
+                </button>
+                <p className="max-w-lg text-center text-xs leading-snug text-slate-500">
+                  {C.landCtaReassurance}
+                </p>
               </div>
             </div>
+
+            {/* 3. Categories — compact horizontal wrap (~2 rows) */}
+            <div className="mx-auto w-full max-w-5xl pt-1">
+              <ExampleChips
+                selectedId={selectedCategory}
+                onSelect={onChipSelect}
+              />
+            </div>
           </div>
+
+          <FooterBrand />
         </div>
       )}
 

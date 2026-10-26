@@ -7,6 +7,7 @@ import { useCurrentPost } from "@/lib/olar/current-post";
 import { useClientAuth } from "@/lib/olar/auth-client";
 import { C } from "@/lib/olar/ui-copy";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
+import { FooterBrand } from "@/components/olar/FooterBrand";
 import {
   Copy,
   ExternalLink,
@@ -252,6 +253,8 @@ export function QuickHomeView({
           {C.quickGoFull}
         </button>
       </div>
+
+      <FooterBrand />
 
       {/* Sticky mobile CTA */}
       <div className="safe-bottom fixed inset-x-0 bottom-14 z-30 border-t border-slate-200 bg-white/95 p-3 backdrop-blur-md lg:hidden">

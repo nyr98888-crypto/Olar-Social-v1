@@ -17,7 +17,19 @@ import {
 import { getCategoryFallback } from "@/lib/olar/category-fallbacks";
 import { CampaignGenerator } from "@/components/olar/CampaignGenerator";
 import { PostCardPreview } from "@/components/olar/PostCardPreview";
+import { AssistedPublishModal } from "@/components/olar/AssistedPublishModal";
+import { PublishPlatformButtons } from "@/components/olar/PublishPlatformButtons";
 import { BrandGlyph } from "@/components/olar/NetworkBrand";
+import { FooterBrand } from "@/components/olar/FooterBrand";
+import { WingmanGreetingCard } from "@/components/olar/WingmanGreetingCard";
+import { useClientAuth } from "@/lib/olar/auth-client";
+import { useWingmanGreeting } from "@/hooks/useWingmanGreeting";
+import { useConnections } from "@/lib/olar/connections";
+import {
+  getSocialAccount,
+  type SocialPlatform,
+} from "@/lib/olar/social-accounts";
+import { executeAssistedPublish } from "@/lib/assisted-publishing";
 import type { CampaignPost } from "@/lib/olar/campaign-posts";
 import type {
   PlatformPosts,
@@ -34,6 +46,18 @@ import {
   whatsappCardShareHref,
   type PreviewChannel,
 } from "@/lib/olar/multi-channel";
+import {
+  type CampaignVariation,
+  type VariationId,
+} from "@/lib/olar/ab-variations";
+import {
+  postToCampaignVariation,
+  selectVariationIndex,
+  setStudioMeta,
+  updateVariationImage,
+  useSelectedVariation,
+  useStudioStore,
+} from "@/lib/store";
 import {
   Copy,
   ImagePlus,
@@ -58,6 +82,10 @@ const TABS: {
 
 export function StudioView() {
   const { page } = useResolvedMyPage();
+  const { isGuest, ready: authReady } = useClientAuth();
+  const { networks } = useConnections();
+  const studio = useStudioStore();
+  const selectedVariation = useSelectedVariation();
   const faceRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<StudioTab>("campaign");
   const [prompt, setPrompt] = useState("");
@@ -65,9 +93,17 @@ export function StudioView() {
   const [bizName, setBizName] = useState("");
   const [niche, setNiche] = useState("");
   const [generating, setGenerating] = useState(false);
+  const wingman = useWingmanGreeting({
+    enabled: authReady && !isGuest,
+    appendToStudio: true,
+  });
   const [result, setResult] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
+  /** Which A/B card is regenerating an image (null = none / legacy single). */
+  const [imageLoadingIndex, setImageLoadingIndex] = useState<number | null>(
+    null
+  );
   const [imageIsFallback, setImageIsFallback] = useState(false);
   const [logoMark, setLogoMark] = useState<string | null>(null);
   const [softToast, setSoftToast] = useState<string | null>(null);
@@ -76,9 +112,24 @@ export function StudioView() {
   const [platforms, setPlatforms] = useState<PlatformPosts | null>(null);
   const [campaignPreview, setCampaignPreview] =
     useState<SocialPostFields | null>(null);
+  const [lastUserText, setLastUserText] = useState("");
   const [copyToast, setCopyToast] = useState<string | null>(null);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [assistedOpen, setAssistedOpen] = useState(false);
+  const [assistedPlatform, setAssistedPlatform] =
+    useState<SocialPlatform | null>(null);
+  const [assistedMeta, setAssistedMeta] = useState<{
+    clipboardOk?: boolean;
+    downloadOk?: boolean;
+    imageOpenedInTab?: boolean;
+  }>({});
+  const variations: CampaignVariation[] = studio.variations
+    ? studio.variations.map(postToCampaignVariation)
+    : [];
+  const selectedVarId: VariationId =
+    studio.selectedVariationIndex === 1 ? "var_2" : "var_1";
   const { message: aiProgress } = useAiProgressMessages(
-    generating || imageLoading
+    generating || imageLoading || studio.isLoading
   );
 
   // Hydrate from persisted current_business_post (never lose FAL URL on remount)
@@ -103,6 +154,41 @@ export function StudioView() {
   useEffect(() => {
     if (!bizName && page.businessName) setBizName(page.businessName);
   }, [page.businessName, bizName]);
+
+  useEffect(() => {
+    setStudioMeta({
+      businessName: bizName || page.businessName || "",
+      category: niche || "",
+    });
+  }, [bizName, niche, page.businessName]);
+
+  // Keep live preview in sync when store selection / variations change
+  useEffect(() => {
+    if (!selectedVariation) return;
+    const next: SocialPostFields = {
+      headline: selectedVariation.headline,
+      body: selectedVariation.bodyText,
+      hashtags: loadCurrentPost()?.hashtags || [],
+      call_to_action: selectedVariation.ctaButton,
+    };
+    setCampaignPreview(next);
+    setPlatforms(resolvePlatforms(next, page));
+    if (
+      selectedVariation.imageUrl &&
+      !selectedVariation.imageUrl.startsWith("data:image/svg")
+    ) {
+      setImageUrl(selectedVariation.imageUrl);
+      setResult(selectedVariation.imageUrl);
+      setImageIsFallback(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- page identity churns; text/image fields are the sync source
+  }, [
+    selectedVariation?.id,
+    selectedVariation?.headline,
+    selectedVariation?.bodyText,
+    selectedVariation?.ctaButton,
+    selectedVariation?.imageUrl,
+  ]);
 
   const onActivePostChange = useCallback(
     (p: CampaignPost | null) => {
@@ -150,8 +236,46 @@ export function StudioView() {
     reader.readAsDataURL(files[0]!);
   }
 
+  function applyVariationToPreview(v: CampaignVariation, userText?: string) {
+    const next: SocialPostFields = {
+      headline: v.headline,
+      body: v.bodyText,
+      hashtags: v.hashtags || loadCurrentPost()?.hashtags || [],
+      call_to_action: v.ctaButton,
+    };
+    setCampaignPreview(next);
+    setPlatforms(resolvePlatforms(next, page));
+    if (v.imageUrl && !v.imageUrl.startsWith("data:image/svg")) {
+      const stamped = v.imageUrl.includes("?")
+        ? `${v.imageUrl}&t=${Date.now()}`
+        : `${v.imageUrl}?t=${Date.now()}`;
+      setImageUrl(stamped);
+      setResult(stamped);
+      setImageIsFallback(false);
+    }
+    const saved = saveCurrentPost({
+      headline: v.headline,
+      body: v.bodyText,
+      cta: v.ctaButton,
+      hashtags: next.hashtags,
+      offer: userText || lastUserText || loadCurrentPost()?.offer || "",
+      image_url: v.imageUrl || loadCurrentPost()?.image_url || null,
+      image_prompt: v.imagePrompt || null,
+      network: previewChannelToNetwork(previewChannel),
+    });
+    void syncCurrentPostToServer(saved);
+  }
+
+  function selectVariation(id: VariationId) {
+    selectVariationIndex(id === "var_2" ? 1 : 0);
+    const v = variations.find((x) => x.id === id);
+    if (v) applyVariationToPreview(v);
+  }
+
   async function handleRegenerateImage(opts?: {
     descriptionOverride?: string;
+    /** Regenerate ONLY this A/B card (0 or 1). Defaults to selected. */
+    variationIndex?: number;
   }) {
     const profileNiche = loadProfile()?.niche;
     const category =
@@ -162,8 +286,18 @@ export function StudioView() {
       ? legacyNicheFromCategory(category)
       : niche || profileNiche || page.tagline;
     const stored = loadCurrentPost();
+    const targetIndex =
+      opts?.variationIndex === 1
+        ? 1
+        : opts?.variationIndex === 0
+          ? 0
+          : studio.selectedVariationIndex;
+    const activeVar =
+      variations[targetIndex] ||
+      variations.find((v) => v.id === selectedVarId);
     const description = (
       opts?.descriptionOverride ||
+      activeVar?.imagePrompt ||
       prompt.trim() ||
       [campaignPreview?.headline, campaignPreview?.body, stored?.offer]
         .filter(Boolean)
@@ -171,9 +305,17 @@ export function StudioView() {
       `${page.businessName} ${page.tagline}`.trim() ||
       "local business"
     ).trim();
-    const seed = Math.floor(Math.random() * 1_000_000);
+    const { withRegenAngleHint, bustImageUrl } = await import(
+      "@/lib/olar/image-cache-bust"
+    );
+    const newSeed = Math.floor(Math.random() * 10000000);
+    const updatedPrompt = withRegenAngleHint(description);
+    const previousPrompt =
+      activeVar?.imagePrompt || stored?.image_prompt || null;
 
+    // Keep previous image visible under skeleton — avoid "empty / broken" flash
     setImageLoading(true);
+    setImageLoadingIndex(targetIndex);
     setSoftToast(null);
     setImageIsFallback(false);
     try {
@@ -181,8 +323,8 @@ export function StudioView() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: description,
-          description,
+          prompt: updatedPrompt,
+          description: updatedPrompt,
           category: category ?? undefined,
           businessName: bizName || page.businessName,
           niche: nicheForApi,
@@ -194,7 +336,10 @@ export function StudioView() {
               : tab === "headshot"
                 ? "1:1"
                 : "16:9",
-          seed,
+          seed: newSeed,
+          bustCache: Date.now(),
+          regenerate: true,
+          previousPrompt,
         }),
         signal: AbortSignal.timeout(45_000),
       });
@@ -208,14 +353,30 @@ export function StudioView() {
       let url = data.image?.url || data.imageUrl;
       let usedClientFallback = false;
       if (!url || url.startsWith("data:image/svg")) {
-        url = getCategoryFallback(category || profileNiche, description);
+        url = getCategoryFallback(
+          category || profileNiche,
+          description,
+          newSeed
+        );
         usedClientFallback = true;
       }
+      // Display bust for browser cache; persist clean URL
+      const { cleanImageUrl } = await import("@/lib/olar/image-cache-bust");
+      const displayUrl = bustImageUrl(url) || `${url}?t=${Date.now()}`;
+      const persistUrl = cleanImageUrl(url) || url;
       const asFallback =
         Boolean(data.fallback || data.isFallback) || usedClientFallback;
-      setImageUrl(url);
-      setResult(url);
-      setImageIsFallback(asFallback);
+      // Update ONLY this card's image in central store
+      const stampedPersist = `${persistUrl}${persistUrl.includes("?") ? "&" : "?"}t=${Date.now()}`;
+      updateVariationImage(targetIndex, {
+        imageUrl: stampedPersist,
+        imagePrompt: data.image?.prompt ?? updatedPrompt,
+      });
+      if (targetIndex === studio.selectedVariationIndex) {
+        setImageUrl(displayUrl);
+        setResult(displayUrl);
+        setImageIsFallback(asFallback);
+      }
       const preview = campaignPreview || {
         headline: bizName || page.businessName || "",
         body: prompt || page.tagline || page.description || "",
@@ -227,28 +388,39 @@ export function StudioView() {
         body: preview.body,
         cta: preview.call_to_action || "",
         hashtags: preview.hashtags || page.firstPost?.hashtags || [],
-        image_url: asFallback ? null : url,
-        image_seed: data.image?.seed ?? seed,
-        image_prompt: data.image?.prompt ?? null,
+        image_url: asFallback ? null : persistUrl,
+        image_seed: data.image?.seed ?? newSeed,
+        image_prompt: data.image?.prompt ?? updatedPrompt,
         network: previewChannelToNetwork(previewChannel),
       });
       saveCurrentPostImage({
-        image_url: url,
-        image_seed: data.image?.seed ?? seed,
-        image_prompt: data.image?.prompt ?? null,
+        image_url: persistUrl,
+        image_seed: data.image?.seed ?? newSeed,
+        image_prompt: data.image?.prompt ?? updatedPrompt,
         fallback: asFallback,
       });
       void syncCurrentPostToServer(saved);
       setSoftToast(data.soft_message || C.aiSoftReady);
     } catch (err) {
       console.error("[Studio] generate-image failed", err);
-      const url = getCategoryFallback(category || profileNiche, description);
-      setImageUrl(url);
-      setResult(url);
-      setImageIsFallback(true);
+      const { bustImageUrl: bust } = await import("@/lib/olar/image-cache-bust");
+      const url =
+        bust(
+          getCategoryFallback(category || profileNiche, description, newSeed)
+        ) || getCategoryFallback(category || profileNiche, description, newSeed);
+      if (targetIndex === studio.selectedVariationIndex) {
+        setImageUrl(url);
+        setResult(url);
+        setImageIsFallback(true);
+      }
+      updateVariationImage(targetIndex, {
+        imageUrl: url,
+        imagePrompt: updatedPrompt,
+      });
       setSoftToast(C.generateErrorRetry);
     } finally {
       setImageLoading(false);
+      setImageLoadingIndex(null);
     }
   }
 
@@ -256,41 +428,80 @@ export function StudioView() {
     await handleRegenerateImage();
   }
 
+  function onVariationsReady(
+    _nextVars: CampaignVariation[],
+    userText: string
+  ) {
+    // Variations already written to central store by CampaignGenerator
+    setLastUserText(userText);
+    setPrompt(userText);
+  }
+
   function onPostReady(draft: {
     headline: string;
     body: string;
     cta: string;
     imagePrompt?: string;
+    imageUrl?: string | null;
     userText: string;
+    variationId?: VariationId;
   }) {
-    setPrompt(draft.userText);
+    // Immediately populate Live Preview — never leave empty / "Missing Card"
+    setLastUserText(draft.userText);
+    if (draft.variationId) {
+      selectVariationIndex(draft.variationId === "var_2" ? 1 : 0);
+    }
     const next: SocialPostFields = {
       headline: draft.headline,
       body: draft.body,
       hashtags: loadCurrentPost()?.hashtags || page.firstPost?.hashtags || [],
       call_to_action: draft.cta,
     };
+    setPrompt(draft.userText);
     setCampaignPreview(next);
     setPlatforms(resolvePlatforms(next, page));
+
+    const hasAbImage =
+      Boolean(draft.imageUrl) &&
+      !draft.imageUrl!.startsWith("data:image/svg");
+
+    if (hasAbImage) {
+      const stamped = draft.imageUrl!.includes("?")
+        ? `${draft.imageUrl}&t=${Date.now()}`
+        : `${draft.imageUrl}?t=${Date.now()}`;
+      setImageUrl(stamped);
+      setResult(stamped);
+      setImageIsFallback(false);
+      setImageLoading(false);
+    }
+
     const saved = saveCurrentPost({
       headline: draft.headline,
       body: draft.body,
       cta: draft.cta,
       hashtags: next.hashtags,
       offer: draft.userText,
+      image_url: hasAbImage
+        ? draft.imageUrl!
+        : loadCurrentPost()?.image_url || null,
+      image_prompt: draft.imagePrompt || null,
       network: previewChannelToNetwork(previewChannel),
     });
     void syncCurrentPostToServer(saved);
-    void handleRegenerateImage({
-      descriptionOverride: [
-        draft.userText,
-        draft.headline,
-        draft.body,
-        draft.imagePrompt,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    });
+
+    // A/B already shipped two images — only regenerate if missing
+    if (!hasAbImage) {
+      void handleRegenerateImage({
+        descriptionOverride: [
+          draft.userText,
+          draft.headline,
+          draft.body,
+          draft.imagePrompt,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      });
+    }
   }
 
   async function generate() {
@@ -340,6 +551,13 @@ export function StudioView() {
         ? Boolean(bizName.trim())
         : true);
 
+  // Never show Missing Card when store variations exist
+  const hasLivePost = Boolean(
+    (studio.variations &&
+      studio.variations[0]?.headline?.trim() &&
+      studio.variations[0]?.bodyText?.trim()) ||
+      (campaignPreview?.headline?.trim() && campaignPreview?.body?.trim())
+  );
   const fallbackPost: SocialPostFields = {
     headline: bizName || page.businessName || C.myBiz,
     body: prompt || page.tagline || page.description,
@@ -404,60 +622,320 @@ export function StudioView() {
     void copyChannelText();
   }
 
-  const previewCard = (
-    <div className="flex w-full flex-col gap-3">
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {PREVIEW_CHANNEL_TABS.map((n) => (
-          <button
-            key={n.id}
-            type="button"
-            onClick={() => selectPreviewChannel(n.id)}
-            className={`inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl px-3 text-sm font-medium ${
-              previewChannel === n.id
-                ? "bg-slate-900 text-white"
-                : "border border-slate-300 bg-white text-slate-800"
-            }`}
-          >
-            <BrandGlyph id={n.glyph} size={14} />
-            {n.label}
-          </button>
-        ))}
-      </div>
-      <PostCardPreview
-        network={previewChannelToNetwork(previewChannel)}
-        businessName={bizName || page.businessName || C.myBiz}
-        logoUrl={page.logoUrl || page.avatarUrl}
-        post={previewPost}
-        imageUrl={previewImage}
-        imageLoading={imageLoading}
-        isFallback={imageIsFallback}
-        onRetryImage={() => void handleRegenerateImage()}
-        waHref={
-          previewChannel === "whatsapp"
-            ? whatsappCardShareHref(activePost, activePlatforms, page)
-            : null
-        }
-      />
-      <div className="flex flex-col gap-2 sm:flex-row">
+  const fbAccount = getSocialAccount(networks, "facebook");
+  const igAccount = getSocialAccount(networks, "instagram");
+
+  async function handlePublishClick(
+    platform: SocialPlatform,
+    opts?: {
+      caption?: string;
+      imageUrl?: string | null;
+    }
+  ) {
+    const account = getSocialAccount(networks, platform);
+    const caption =
+      opts?.caption ??
+      formatChannelShareText(
+        activePost,
+        activePlatforms,
+        platform,
+        page
+      );
+    const rawImg = opts?.imageUrl !== undefined ? opts.imageUrl : previewImage;
+    const img =
+      rawImg &&
+      (rawImg.startsWith("http") || rawImg.startsWith("data:"))
+        ? rawImg
+        : null;
+
+    if (account.mode === "assisted_personal") {
+      setPublishBusy(true);
+      try {
+        const result = await executeAssistedPublish({
+          platform,
+          text: caption,
+          imageUrl: img,
+          profileUrl: account.profileUrl || networks[platform]?.pageUrl,
+        });
+        setAssistedMeta({
+          clipboardOk: result.clipboardOk,
+          downloadOk: result.downloadOk,
+          imageOpenedInTab: result.imageOpenedInTab,
+        });
+        setAssistedPlatform(platform);
+        setAssistedOpen(true);
+      } finally {
+        setPublishBusy(false);
+      }
+      return;
+    }
+
+    if (!img || !img.startsWith("http")) {
+      setSoftToast(
+        "לפרסום אוטומטי נדרשת תמונה עם קישור http — נסו שוב אחרי יצירת תמונה, או עברו למצב 3 קליקים"
+      );
+      window.setTimeout(() => setSoftToast(null), 4000);
+      return;
+    }
+
+    setPublishBusy(true);
+    try {
+      const res = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform,
+          caption,
+          imageUrl: img,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+      } | null;
+      if (data?.ok) {
+        setSoftToast(data.message || C.publishApiOk || "פורסם בהצלחה");
+      } else {
+        setSoftToast(
+          data?.error || C.publishApiFail || "הפרסום האוטומטי נכשל"
+        );
+      }
+      window.setTimeout(() => setSoftToast(null), 4500);
+    } catch {
+      setSoftToast(C.publishApiFail || "הפרסום האוטומטי נכשל");
+      window.setTimeout(() => setSoftToast(null), 4500);
+    } finally {
+      setPublishBusy(false);
+    }
+  }
+
+  const publishBar = (
+    <PublishPlatformButtons
+      facebookMode={fbAccount.mode}
+      instagramMode={igAccount.mode}
+      busy={publishBusy}
+      onPublish={(p) => void handlePublishClick(p)}
+    />
+  );
+
+  const channelTabs = (
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {PREVIEW_CHANNEL_TABS.map((n) => (
+        <button
+          key={n.id}
+          type="button"
+          onClick={() => selectPreviewChannel(n.id)}
+          className={`inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl px-3 text-sm font-medium ${
+            previewChannel === n.id
+              ? "bg-slate-900 text-white"
+              : "border border-slate-300 bg-white text-slate-800"
+          }`}
+        >
+          <BrandGlyph id={n.glyph} size={14} />
+          {n.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  const shareActions = (
+    <div className="flex flex-col gap-2 sm:flex-row">
+      <button
+        type="button"
+        onClick={() => void copyChannelText()}
+        className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-base font-medium text-slate-900 hover:bg-slate-50"
+      >
+        <Copy className="h-4 w-4 text-slate-600" />
+        {copyToast || C.copyPlatformText}
+      </button>
+      {previewChannel === "whatsapp" ? (
         <button
           type="button"
-          onClick={() => void copyChannelText()}
-          className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-base font-medium text-slate-900 hover:bg-slate-50"
+          onClick={shareChannel}
+          className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-[#25D366] text-base font-medium text-white hover:brightness-110"
         >
-          <Copy className="h-4 w-4 text-slate-600" />
-          {copyToast || C.copyPlatformText}
+          <Share2 className="h-4 w-4" />
+          {C.sendWaCard || C.waSendCard}
         </button>
-        {previewChannel === "whatsapp" ? (
-          <button
-            type="button"
-            onClick={shareChannel}
-            className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-[#25D366] text-base font-medium text-white hover:brightness-110"
-          >
-            <Share2 className="h-4 w-4" />
-            {C.sendWaCard || C.waSendCard}
-          </button>
-        ) : null}
-      </div>
+      ) : null}
+    </div>
+  );
+
+  const showAbGrid = variations.length >= 2;
+
+  const previewCard = (
+    <div className="flex w-full flex-col gap-3">
+      {channelTabs}
+
+      {showAbGrid ? (
+        <>
+          <p className="text-right text-base font-semibold text-slate-800">
+            {C.abOptionsHeader}
+          </p>
+          {/* Quick tabs — swap selection instantly; both cards stay visible below */}
+          <div className="grid grid-cols-2 gap-2" dir="rtl">
+            {variations.slice(0, 2).map((v, i) => {
+              const isSelected = selectedVarId === v.id;
+              return (
+                <button
+                  key={`tab-${v.id}`}
+                  type="button"
+                  onClick={() => selectVariation(v.id)}
+                  className={`min-h-11 rounded-xl px-3 text-sm font-bold transition ${
+                    isSelected
+                      ? i === 0
+                        ? "bg-cyan-600 text-white shadow-sm"
+                        : "bg-purple-600 text-white shadow-sm"
+                      : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  {i === 0 ? "✨ אופציה 1" : "🎯 אופציה 2"}
+                </button>
+              );
+            })}
+          </div>
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+            {variations.slice(0, 2).map((v, i) => {
+              const isSelected = selectedVarId === v.id;
+              const cardPost: SocialPostFields = {
+                headline: v.headline,
+                body: v.bodyText,
+                hashtags: v.hashtags || [],
+                call_to_action: v.ctaButton,
+              };
+              const cardPlatforms = resolvePlatforms(cardPost, page);
+              const cardPreview = platformToCardData(
+                cardPost,
+                cardPlatforms,
+                previewChannel
+              );
+              const cardImage =
+                v.imageUrl && !v.imageUrl.startsWith("data:image/svg")
+                  ? v.imageUrl
+                  : isSelected
+                    ? previewImage
+                    : null;
+              return (
+                <div
+                  key={v.id}
+                  className={`flex flex-col gap-3 rounded-2xl p-1 transition ${
+                    isSelected
+                      ? "ring-2 ring-offset-2 " +
+                        (i === 0 ? "ring-cyan-500" : "ring-purple-500")
+                      : ""
+                  }`}
+                >
+                  <div className="flex w-full flex-col gap-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => selectVariation(v.id)}
+                      className={`inline-flex w-fit rounded-lg px-3 py-1 text-xs font-bold text-white ${
+                        i === 0 ? "bg-cyan-600" : "bg-purple-600"
+                      }`}
+                    >
+                      {i === 0 ? C.option1Badge : C.option2Badge}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectVariation(v.id)}
+                      className="w-full text-right"
+                    >
+                      <PostCardPreview
+                        className="max-w-none pointer-events-none"
+                        network={previewChannelToNetwork(previewChannel)}
+                        businessName={bizName || page.businessName || C.myBiz}
+                        logoUrl={page.logoUrl || page.avatarUrl}
+                        post={cardPreview}
+                        imageUrl={cardImage}
+                        imageLoading={imageLoadingIndex === i}
+                        isFallback={isSelected ? imageIsFallback : false}
+                        waHref={
+                          previewChannel === "whatsapp"
+                            ? whatsappCardShareHref(
+                                cardPost,
+                                cardPlatforms,
+                                page
+                              )
+                            : null
+                        }
+                      />
+                    </button>
+                    {previewChannel !== "whatsapp" ? (
+                      <PublishPlatformButtons
+                        facebookMode={fbAccount.mode}
+                        instagramMode={igAccount.mode}
+                        busy={publishBusy}
+                        onPublish={(p) => {
+                          selectVariation(v.id);
+                          const cap = formatChannelShareText(
+                            cardPost,
+                            cardPlatforms,
+                            p,
+                            page
+                          );
+                          void handlePublishClick(p, {
+                            caption: cap,
+                            imageUrl: cardImage,
+                          });
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={imageLoading}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      selectVariation(v.id);
+                      void handleRegenerateImage({
+                        variationIndex: i,
+                        descriptionOverride: v.imagePrompt || undefined,
+                      });
+                    }}
+                    className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {C.swapThisImage}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {shareActions}
+        </>
+      ) : hasLivePost || previewPost.headline?.trim() ? (
+        <>
+          <PostCardPreview
+            network={previewChannelToNetwork(previewChannel)}
+            businessName={bizName || page.businessName || C.myBiz}
+            logoUrl={page.logoUrl || page.avatarUrl}
+            post={previewPost}
+            imageUrl={previewImage}
+            imageLoading={imageLoading}
+            isFallback={imageIsFallback}
+            onRetryImage={() => void handleRegenerateImage()}
+            waHref={
+              previewChannel === "whatsapp"
+                ? whatsappCardShareHref(activePost, activePlatforms, page)
+                : null
+            }
+            publishActions={
+              previewChannel !== "whatsapp" ? publishBar : undefined
+            }
+          />
+          {shareActions}
+        </>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-10 text-center">
+          <p className="text-base font-semibold text-slate-800">
+            שלחו הודעה בסטודיו — הכרטיס יופיע כאן מיד
+          </p>
+          <p className="mt-2 text-sm text-slate-600">
+            כתבו על העסק ולחצו שליחה — התצוגה תתעדכן מיד.
+          </p>
+        </div>
+      )}
     </div>
   );
 
@@ -467,7 +945,11 @@ export function StudioView() {
       dir="rtl"
     >
       <div className="flex h-full min-h-0 w-full flex-col gap-6 overflow-hidden lg:flex-row">
-        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden lg:flex-[1.2]">
+        <section
+          className={`flex min-h-0 min-w-0 flex-col overflow-hidden ${
+            showAbGrid ? "lg:flex-[0.9]" : "lg:flex-[1.2]"
+          }`}
+        >
           <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pb-28 lg:pb-8 animate-rise">
             <header className="text-right">
               <h1 className="text-right text-xl font-bold text-slate-800">
@@ -500,6 +982,20 @@ export function StudioView() {
               ))}
             </div>
 
+            {tab === "campaign" &&
+            wingman.shown &&
+            wingman.replyMessage &&
+            studio.messages.length <= 1 ? (
+              <WingmanGreetingCard
+                replyMessage={wingman.replyMessage}
+                chips={wingman.chips}
+                onChipClick={(chip) => {
+                  wingman.onChipClick(chip);
+                  setTab("campaign");
+                }}
+              />
+            ) : null}
+
             {tab === "campaign" ? (
               <CampaignGenerator
                 initialTopic={
@@ -511,11 +1007,13 @@ export function StudioView() {
                 }
                 onActivePostChange={onActivePostChange}
                 onPostReady={onPostReady}
+                onVariationsReady={onVariationsReady}
                 category={
                   normalizeCategory(niche) ||
                   normalizeCategory(loadProfile()?.niche) ||
                   null
                 }
+                businessName={bizName || page.businessName}
                 hideNetworkTabs
               />
             ) : null}
@@ -679,16 +1177,33 @@ export function StudioView() {
             )}
 
             <div className="pt-2 lg:hidden">{previewCard}</div>
+            <FooterBrand />
           </div>
         </section>
 
-        {/* Sticky Live Preview — single scroll on left; aside does not scroll */}
-        <aside className="hidden min-h-0 lg:flex lg:flex-[0.8] lg:flex-col">
+        {/* Sticky Live Preview — dual A/B cards side-by-side when variations exist */}
+        <aside
+          className={`hidden min-h-0 lg:flex lg:flex-col ${
+            showAbGrid ? "lg:flex-[1.4] lg:min-w-[36rem]" : "lg:flex-[0.8]"
+          }`}
+        >
           <div className="flex h-full flex-col lg:max-h-[calc(100vh-120px)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4">
             {previewCard}
           </div>
         </aside>
       </div>
+
+      <AssistedPublishModal
+        open={assistedOpen}
+        platform={assistedPlatform}
+        clipboardOk={assistedMeta.clipboardOk}
+        downloadOk={assistedMeta.downloadOk}
+        imageOpenedInTab={assistedMeta.imageOpenedInTab}
+        onClose={() => {
+          setAssistedOpen(false);
+          setAssistedPlatform(null);
+        }}
+      />
     </div>
   );
 }

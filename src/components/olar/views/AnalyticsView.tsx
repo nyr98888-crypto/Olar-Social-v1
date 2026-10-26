@@ -3,6 +3,7 @@
 import { useClientAuth } from "@/lib/olar/auth-client";
 import { useCurrentPost } from "@/lib/olar/current-post";
 import { C } from "@/lib/olar/ui-copy";
+import { FooterBrand } from "@/components/olar/FooterBrand";
 import { BarChart3 } from "lucide-react";
 
 /**
@@ -65,6 +66,8 @@ export function AnalyticsView() {
           </p>
         </div>
       ) : null}
+
+      <FooterBrand />
     </div>
   );
 }

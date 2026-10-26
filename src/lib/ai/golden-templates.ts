@@ -100,8 +100,20 @@ export function buildGoldenPost(
   return buildEmptyPostResponse(ctx);
 }
 
-const SOFT_FAIL_REPLY =
-  "לא הצלחתי לייצר פוסט כרגע. נסו שוב עם תיאור קצר של העסק — בלי טקסט מוכן מראש.";
+/** Soft retry only — never lecture about "ready-made" / prewritten text. */
+export const SOFT_FAIL_REPLY = "חלה שגיאה בייצור, אנא נסה שנית";
+
+/** Blocked chat_reply strings — lecture / soft-fail must never surface as Maya success copy. */
+export function isBlockedStudioChatReply(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  return (
+    t === SOFT_FAIL_REPLY ||
+    /בלי טקסט מוכן|טקסט מוכן מראש|לא הצלחתי לייצר פוסט כרגע|חלה שגיאה בייצור/i.test(
+      t
+    )
+  );
+}
 
 /** Soft AgentOutput with null/empty social_post — never canned niche copy. */
 export function buildGoldenAgentOutput(

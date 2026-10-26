@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import type { OlarView } from "@/lib/olar/types";
 import { useOlarTheme } from "@/lib/olar/theme";
 import { useWorkMode } from "@/lib/olar/work-mode";
@@ -21,6 +22,7 @@ import { MyPageView } from "./views/MyPageView";
 import { QuickHomeView } from "./views/QuickHomeView";
 import { ReviewsView } from "./views/ReviewsView";
 import { SettingsView } from "./views/SettingsView";
+import { DnaView } from "./views/DnaView";
 import { StudioView } from "./views/StudioView";
 import { YonaView } from "./views/YonaView";
 
@@ -34,6 +36,7 @@ const TITLES: Record<OlarView, string> = {
   analytics: C.whatWorked,
   mypage: C.myPageTitle,
   settings: C.networksTitle,
+  dna: C.navDnaSettings || "ה-DNA והגדרות העסק",
 };
 
 export function OlarApp({
@@ -41,7 +44,14 @@ export function OlarApp({
 }: {
   initialView?: OlarView;
 } = {}) {
-  const [view, setView] = useState<OlarView>(initialView);
+  const pathname = usePathname();
+  const router = useRouter();
+  const [view, setView] = useState<OlarView>(() => {
+    if (pathname === "/calendar") return "calendar";
+    if (pathname === "/dna" || pathname?.startsWith("/dna")) return "dna";
+    if (pathname?.startsWith("/settings")) return "settings";
+    return initialView;
+  });
   const [menuOpen, setMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -50,10 +60,22 @@ export function OlarApp({
   const { workMode, setWorkMode, ready: modeReady } = useWorkMode();
 
   useEffect(() => {
+    if (pathname === "/calendar") {
+      setView("calendar");
+      return;
+    }
+    if (pathname === "/dna" || pathname?.startsWith("/dna")) {
+      setView("dna");
+      return;
+    }
+    if (pathname?.startsWith("/settings")) {
+      setView("settings");
+      return;
+    }
     if (initialView && initialView !== "home") {
       setView(initialView);
     }
-  }, [initialView]);
+  }, [initialView, pathname]);
 
   function finishOnboarding() {
     setWorkMode("quick");
@@ -64,13 +86,28 @@ export function OlarApp({
   function handleNavigate(next: OlarView) {
     setMenuOpen(false);
     setUserMenuOpen(false);
+    if (next === "calendar") {
+      setView("calendar");
+      router.push("/calendar");
+      return;
+    }
+    if (next === "dna") {
+      setView("dna");
+      router.push("/dna");
+      return;
+    }
+    if (next === "settings") {
+      setView("settings");
+      router.push("/settings");
+      return;
+    }
     setView(next);
-    if (typeof window !== "undefined") {
-      if (next === "calendar") {
-        window.history.replaceState(null, "", "/calendar");
-      } else if (window.location.pathname === "/calendar") {
-        window.history.replaceState(null, "", "/");
-      }
+    if (
+      pathname === "/calendar" ||
+      pathname === "/dna" ||
+      pathname?.startsWith("/settings")
+    ) {
+      router.push("/");
     }
   }
 
@@ -281,9 +318,13 @@ export function OlarApp({
     );
   }
 
+  // Land / onboarding: full-viewport only — no header, BottomNav, or RightDock.
   if (show) {
     return (
-      <div className="olar-shell h-dvh w-full" data-theme={theme}>
+      <div
+        className="olar-shell h-dvh w-full overflow-x-hidden overflow-hidden"
+        data-theme={theme}
+      >
         <Onboarding onDone={finishOnboarding} />
       </div>
     );
@@ -411,6 +452,7 @@ export function OlarApp({
           {view === "analytics" && <AnalyticsView />}
           {view === "mypage" && <MyPageView />}
           {view === "settings" && <SettingsView />}
+          {view === "dna" && <DnaView />}
         </div>
       </main>
 

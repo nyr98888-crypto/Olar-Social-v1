@@ -1,17 +1,36 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { AccountKind, IntegrationId } from "@/lib/olar/types";
+import { useEffect, useMemo, useState } from "react";
+import type { IntegrationId } from "@/lib/olar/types";
 import {
   NETWORK_PRIORITY,
   useConnections,
   type ConnEntry,
 } from "@/lib/olar/connections";
-import { useResolvedMyPage } from "@/lib/olar/business-profile";
-import { signInWithGoogle } from "@/lib/olar/auth-client";
+import {
+  DEFAULT_PUBLISH_MODE,
+  publishModeToKind,
+  resolvePublishMode,
+  type PublishMode,
+  type SocialPlatform,
+} from "@/lib/olar/social-accounts";
+import {
+  loadProfile,
+  useResolvedMyPage,
+} from "@/lib/olar/business-profile";
+import { signInWithGoogle, useClientAuth } from "@/lib/olar/auth-client";
 import { C } from "@/lib/olar/ui-copy";
 import { BrandGlyph, BRAND } from "../NetworkBrand";
-import { Check, Copy, Link2, Settings2, Unlink, X } from "lucide-react";
+import { FooterBrand } from "@/components/olar/FooterBrand";
+import {
+  Check,
+  Copy,
+  Fingerprint,
+  Link2,
+  Settings2,
+  Unlink,
+  X,
+} from "lucide-react";
 
 type Meta = {
   title: string;
@@ -95,26 +114,75 @@ function shortLine(
   connected: boolean
 ): string {
   if (!connected) return meta.purpose;
+  const mode = resolvePublishMode(state);
   const bits = [
-    state.kind === "business"
-      ? C.biz
-      : state.kind === "personal"
-        ? C.personal
-        : "",
-    state.handle || state.phone || state.pageUrl,
+    mode === "api_business" ? C.biz : C.personal,
+    state.handle || state.phone || state.pageUrl || state.pageId,
   ].filter(Boolean);
   return bits.join(" · ") || meta.purpose;
+}
+
+async function syncSocialAccountToServer(opts: {
+  platform: SocialPlatform;
+  mode: PublishMode;
+  profileUrl: string;
+  pageId: string;
+  accessToken: string;
+  isConnected: boolean;
+  /** When true, send empty token to wipe server credential */
+  clearToken?: boolean;
+}) {
+  try {
+    const body: Record<string, unknown> = {
+      platform: opts.platform,
+      mode: opts.mode,
+      profileUrl: opts.profileUrl,
+      pageId: opts.pageId,
+      isConnected: opts.isConnected,
+    };
+    if (opts.clearToken) body.accessToken = "";
+    else if (opts.accessToken.trim()) {
+      body.accessToken = opts.accessToken.trim();
+    }
+    await fetch("/api/social-accounts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    /* soft-fail — local connections still saved */
+  }
 }
 
 export function SettingsView() {
   const { page } = useResolvedMyPage();
   const { networks, update, isGuest } = useConnections();
+  const { isAuthed } = useClientAuth();
   const [modalId, setModalId] = useState<IntegrationId | null>(null);
-  const [kind, setKind] = useState<AccountKind>("business");
+  /** Default safer track without Meta credentials */
+  const [publishMode, setPublishMode] = useState<PublishMode>(
+    DEFAULT_PUBLISH_MODE
+  );
   const [username, setUsername] = useState("");
   const [phone, setPhone] = useState("");
   const [pageUrl, setPageUrl] = useState("");
+  const [pageId, setPageId] = useState("");
+  const [accessToken, setAccessToken] = useState("");
+  const [hasServerToken, setHasServerToken] = useState(false);
   const [copiedWa, setCopiedWa] = useState(false);
+  const profile = loadProfile();
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.location.hash === "#dna") {
+      window.setTimeout(() => {
+        document.getElementById("dna")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 120);
+    }
+  }, []);
 
   const ordered = useMemo(() => NETWORK_PRIORITY, []);
 
@@ -135,28 +203,81 @@ export function SettingsView() {
     }
     const cur = networks[id];
     setModalId(id);
-    setKind(cur.kind === "personal" ? "personal" : "business");
+    const mode =
+      id === "facebook" || id === "instagram"
+        ? resolvePublishMode(cur)
+        : DEFAULT_PUBLISH_MODE;
+    setPublishMode(mode);
     setUsername(cur.handle.replace(/^@/, ""));
     setPhone(cur.phone || "");
     setPageUrl(cur.pageUrl || "");
+    setPageId(cur.pageId || "");
+    setAccessToken("");
+    setHasServerToken(false);
+
+    if (
+      isAuthed &&
+      (id === "facebook" || id === "instagram")
+    ) {
+      void fetch("/api/social-accounts")
+        .then((r) => r.json())
+        .then((data: {
+          accounts?: Record<
+            string,
+            { hasCredentials?: boolean; pageId?: string; profileUrl?: string; mode?: PublishMode }
+          >;
+        }) => {
+          const acc = data.accounts?.[id];
+          if (!acc) return;
+          if (acc.mode) setPublishMode(acc.mode);
+          if (acc.pageId) setPageId(acc.pageId);
+          if (acc.profileUrl) setPageUrl(acc.profileUrl);
+          setHasServerToken(Boolean(acc.hasCredentials));
+        })
+        .catch(() => {
+          /* soft-fail */
+        });
+    }
   }
 
   function confirmConnect() {
     if (!modalId || isGuest) return;
+    const isFbIg = modalId === "facebook" || modalId === "instagram";
+    const mode = isFbIg ? publishMode : DEFAULT_PUBLISH_MODE;
     const patch: Partial<ConnEntry> = {
       connected: true,
       handle: username ? `@${username.replace(/^@/, "")}` : "",
       phone,
-      kind:
-        modalId === "facebook" || modalId === "instagram"
-          ? kind
-          : modalId === "google" || modalId === "whatsapp"
-            ? "business"
-            : kind,
-      pageUrl: modalId === "easy" ? pageUrl : "",
+      kind: isFbIg
+        ? publishModeToKind(mode)
+        : modalId === "google" || modalId === "whatsapp"
+          ? "business"
+          : publishModeToKind(mode),
+      pageUrl: isFbIg
+        ? mode === "assisted_personal"
+          ? pageUrl.trim()
+          : pageUrl.trim()
+        : modalId === "easy"
+          ? pageUrl
+          : "",
+      mode: isFbIg ? mode : undefined,
+      pageId: isFbIg && mode === "api_business" ? pageId.trim() : "",
     };
     update(modalId, patch);
+
+    if (isFbIg && isAuthed) {
+      void syncSocialAccountToServer({
+        platform: modalId,
+        mode,
+        profileUrl: pageUrl.trim(),
+        pageId: pageId.trim(),
+        accessToken,
+        isConnected: true,
+      });
+    }
+
     setModalId(null);
+    setAccessToken("");
   }
 
   function disconnect(id: IntegrationId) {
@@ -166,7 +287,26 @@ export function SettingsView() {
       phone: id === "whatsapp" ? networks.whatsapp.phone : "",
       kind: null,
       pageUrl: "",
+      mode:
+        id === "facebook" || id === "instagram"
+          ? DEFAULT_PUBLISH_MODE
+          : undefined,
+      pageId: "",
     });
+    if (
+      isAuthed &&
+      (id === "facebook" || id === "instagram")
+    ) {
+      void syncSocialAccountToServer({
+        platform: id,
+        mode: DEFAULT_PUBLISH_MODE,
+        profileUrl: "",
+        pageId: "",
+        accessToken: "",
+        isConnected: false,
+        clearToken: true,
+      });
+    }
     setModalId(null);
   }
 
@@ -183,8 +323,8 @@ export function SettingsView() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-7xl animate-rise" dir="rtl">
-      <header className="mb-5 text-right">
+    <div className="mx-auto w-full max-w-7xl animate-rise space-y-6" dir="rtl">
+      <header className="mb-1 text-right">
         <h1
           className="text-xl font-semibold text-slate-900 sm:text-2xl"
           style={{ fontFamily: "var(--font-display)" }}
@@ -196,8 +336,60 @@ export function SettingsView() {
         </p>
       </header>
 
+      {/* ── Brand DNA (sidebar deep-link target) ── */}
+      <section
+        id="dna"
+        className="scroll-mt-24 rounded-2xl border border-cyan-200/80 bg-white p-5 text-right shadow-sm"
+      >
+        <div className="mb-3 flex items-center gap-2">
+          <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700">
+            <Fingerprint className="h-5 w-5" />
+          </span>
+          <div>
+            <h2 className="text-lg font-bold text-slate-950">
+              {C.navDnaSettings || "ה-DNA והגדרות העסק"}
+            </h2>
+            <p className="text-sm text-slate-600">
+              פרטי המותג שנשמרו מההיכרות — משמשים לפוסטים ולתמונות
+            </p>
+          </div>
+        </div>
+        <dl className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-xl bg-slate-50 px-3 py-2">
+            <dt className="text-xs font-semibold text-slate-500">שם העסק</dt>
+            <dd className="text-base font-bold text-slate-900">
+              {profile?.businessName || page.businessName || "—"}
+            </dd>
+          </div>
+          <div className="rounded-xl bg-slate-50 px-3 py-2">
+            <dt className="text-xs font-semibold text-slate-500">תחום</dt>
+            <dd className="text-base font-bold text-slate-900">
+              {profile?.niche || page.tagline || "—"}
+            </dd>
+          </div>
+          <div className="rounded-xl bg-slate-50 px-3 py-2">
+            <dt className="text-xs font-semibold text-slate-500">עיר</dt>
+            <dd className="text-base font-bold text-slate-900">
+              {profile?.city || "—"}
+            </dd>
+          </div>
+          <div className="rounded-xl bg-slate-50 px-3 py-2">
+            <dt className="text-xs font-semibold text-slate-500">טלפון / וואטסאפ</dt>
+            <dd className="text-base font-bold text-slate-900" dir="ltr">
+              {profile?.whatsapp || profile?.phone || "—"}
+            </dd>
+          </div>
+          <div className="rounded-xl bg-slate-50 px-3 py-2 sm:col-span-2">
+            <dt className="text-xs font-semibold text-slate-500">תיאור</dt>
+            <dd className="text-sm leading-relaxed text-slate-800">
+              {profile?.description || page.description || "—"}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
       {/* ── Smart status line ── */}
-      <div className="mb-5 flex items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white px-4 py-3 shadow-sm">
+      <div className="mb-1 flex items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white px-4 py-3 shadow-sm">
         <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
           <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-blue-50 text-blue-600">
             <Link2 className="h-4 w-4" />
@@ -362,16 +554,16 @@ export function SettingsView() {
             </div>
 
             {(modalId === "facebook" || modalId === "instagram") && (
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {(
                   [
                     {
-                      id: "business" as const,
+                      id: "api_business" as const,
                       title: C.bizPage,
                       desc: C.descFbIgBiz,
                     },
                     {
-                      id: "personal" as const,
+                      id: "assisted_personal" as const,
                       title: C.personalFast,
                       desc: C.descFbIgPersonal,
                     },
@@ -380,17 +572,19 @@ export function SettingsView() {
                   <button
                     key={opt.id}
                     type="button"
-                    onClick={() => setKind(opt.id)}
+                    onClick={() => setPublishMode(opt.id)}
                     className={`min-h-[5rem] rounded-2xl border px-3 py-3 text-right transition ${
-                      kind === opt.id
+                      publishMode === opt.id
                         ? "border-accent bg-accent-soft"
                         : "border-slate-200 bg-slate-50"
                     }`}
                   >
-                    <p className="text-base font-semibold text-slate-900">
+                    <p className="text-sm font-semibold leading-snug text-slate-900 sm:text-base">
                       {opt.title}
                     </p>
-                    <p className="mt-1 text-sm text-slate-800">{opt.desc}</p>
+                    <p className="mt-1 text-xs text-slate-700 sm:text-sm">
+                      {opt.desc}
+                    </p>
                   </button>
                 ))}
               </div>
@@ -409,11 +603,9 @@ export function SettingsView() {
               </label>
             )}
 
-            {(modalId === "whatsapp" ||
-              modalId === "facebook" ||
-              modalId === "instagram") && (
+            {modalId === "whatsapp" && (
               <label className="mt-3 block text-right text-base text-slate-900">
-                {modalId === "whatsapp" ? C.waPhoneLabel : C.phoneQuick}
+                {C.waPhoneLabel}
                 <input
                   dir="ltr"
                   value={phone}
@@ -424,6 +616,53 @@ export function SettingsView() {
                 />
               </label>
             )}
+
+            {(modalId === "facebook" || modalId === "instagram") &&
+              publishMode === "assisted_personal" && (
+                <label className="mt-3 block text-right text-base text-slate-900">
+                  {C.profileUrlLabel}
+                  <input
+                    dir="ltr"
+                    value={pageUrl}
+                    onChange={(e) => setPageUrl(e.target.value)}
+                    placeholder={C.profileUrlPlaceholder}
+                    className="mt-1.5 min-h-14 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-left text-lg outline-none focus:border-accent"
+                  />
+                </label>
+              )}
+
+            {(modalId === "facebook" || modalId === "instagram") &&
+              publishMode === "api_business" && (
+                <>
+                  <label className="mt-3 block text-right text-base text-slate-900">
+                    {C.pageIdLabel}
+                    <input
+                      dir="ltr"
+                      value={pageId}
+                      onChange={(e) => setPageId(e.target.value)}
+                      placeholder={C.pageIdPlaceholder}
+                      className="mt-1.5 min-h-14 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-left text-lg outline-none focus:border-accent"
+                    />
+                  </label>
+                  <label className="mt-3 block text-right text-base text-slate-900">
+                    {C.accessTokenLabel}
+                    <input
+                      dir="ltr"
+                      type="password"
+                      autoComplete="off"
+                      value={accessToken}
+                      onChange={(e) => setAccessToken(e.target.value)}
+                      placeholder={C.accessTokenPlaceholder}
+                      className="mt-1.5 min-h-14 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-left text-lg outline-none focus:border-accent"
+                    />
+                  </label>
+                  {hasServerToken ? (
+                    <p className="mt-1.5 text-xs text-emerald-700">
+                      {C.accessTokenSavedHint}
+                    </p>
+                  ) : null}
+                </>
+              )}
 
             {modalId === "easy" && (
               <label className="mt-4 block text-right text-base text-slate-900">
@@ -460,6 +699,8 @@ export function SettingsView() {
           </div>
         </div>
       )}
+
+      <FooterBrand />
     </div>
   );
 }

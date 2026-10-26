@@ -21,6 +21,7 @@ import {
   buildPartnerMemory,
   type BusinessProfileLike,
 } from "@/lib/ai/partner-memory";
+import { getMarketingProfile } from "@/lib/olar/user-marketing-profile";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -251,6 +252,8 @@ export async function POST(request: Request) {
       brandGuidelines,
     });
 
+    const marketingProfile = await getMarketingProfile(supabase, userId);
+
     // Load chat text only — never image_prompt (context bleed prevention)
     const { data: priorMessages } = await supabase
       .from("messages")
@@ -280,6 +283,7 @@ export async function POST(request: Request) {
       brandGuidelines,
       brandDna,
       partnerMemory,
+      marketingProfile,
       referenceImages:
         referenceImages.length > 0 ? referenceImages : undefined,
       previousImagePrompt,

@@ -96,10 +96,27 @@ export async function updateCalendarEvent(
   };
   if (!res.ok || !data.event) return null;
   if (data.guestMode || id.startsWith("guest-")) {
-    const list = loadGuestEvents().map((e) =>
-      e.id === id ? { ...e, ...data.event! } : e
-    );
+    const list = loadGuestEvents().map((e) => {
+      if (e.id !== id) return e;
+      return {
+        ...e,
+        ...data.event!,
+        id: e.id,
+        title: data.event!.title || e.title,
+        description:
+          data.event!.description !== undefined
+            ? data.event!.description
+            : e.description,
+        start_time: data.event!.start_time || e.start_time,
+        end_time: data.event!.end_time || e.end_time,
+        event_type: data.event!.event_type || e.event_type,
+        reminder_minutes:
+          data.event!.reminder_minutes ?? e.reminder_minutes,
+        status: (data.event!.status as CalendarEventRecord["status"]) || e.status,
+      };
+    });
     saveGuestEvents(list);
+    return list.find((e) => e.id === id) || data.event;
   }
   return data.event;
 }

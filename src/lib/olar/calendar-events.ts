@@ -28,6 +28,10 @@ export type CalendarEventRecord = {
   status: CalendarEventStatus;
   reminder_minutes: number;
   google_event_id: string | null;
+  /** CRM extras (persisted in description envelope for guest / until migration) */
+  client_name?: string | null;
+  client_phone?: string | null;
+  service_type?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -41,7 +45,68 @@ export type CalendarEventInput = {
   status?: CalendarEventStatus;
   reminder_minutes?: number;
   google_event_id?: string | null;
+  client_name?: string | null;
+  client_phone?: string | null;
+  service_type?: string | null;
 };
+
+export const SERVICE_TYPE_OPTIONS = [
+  "פחחות וצבע",
+  "טיפול תקופתי",
+  "פוסט מתוזמן",
+  "משלוח",
+  "פגישה",
+  "אחר",
+] as const;
+
+/** Pack CRM fields into description for storage without schema drift. */
+export function packCrmDescription(opts: {
+  notes?: string | null;
+  client_name?: string | null;
+  client_phone?: string | null;
+  service_type?: string | null;
+}): string | null {
+  const notes = (opts.notes || "").trim();
+  const client = (opts.client_name || "").trim();
+  const phone = (opts.client_phone || "").trim();
+  const service = (opts.service_type || "").trim();
+  if (!notes && !client && !phone && !service) return null;
+  const lines = [
+    notes,
+    client ? `לקוח: ${client}` : "",
+    phone ? `טלפון: ${phone}` : "",
+    service ? `שירות: ${service}` : "",
+  ].filter(Boolean);
+  return lines.join("\n") || null;
+}
+
+export function unpackCrmDescription(description: string | null | undefined): {
+  notes: string;
+  client_name: string;
+  client_phone: string;
+  service_type: string;
+} {
+  const raw = description || "";
+  const lines = raw.split("\n");
+  let client_name = "";
+  let client_phone = "";
+  let service_type = "";
+  const notesLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("לקוח:")) client_name = line.replace(/^לקוח:\s*/, "");
+    else if (line.startsWith("טלפון:"))
+      client_phone = line.replace(/^טלפון:\s*/, "");
+    else if (line.startsWith("שירות:"))
+      service_type = line.replace(/^שירות:\s*/, "");
+    else notesLines.push(line);
+  }
+  return {
+    notes: notesLines.join("\n").trim(),
+    client_name,
+    client_phone,
+    service_type,
+  };
+}
 
 export function isCalendarEventType(v: unknown): v is CalendarEventType {
   return (

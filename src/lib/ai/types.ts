@@ -4,6 +4,7 @@ import type {
   BrandGuidelines,
 } from "../../../schemas/agent";
 import type { PartnerMemory } from "./partner-memory";
+import type { UserMarketingProfile } from "@/lib/olar/user-marketing-profile";
 
 export type ChatRole = "user" | "assistant" | "system";
 
@@ -26,6 +27,8 @@ export interface AgentRequest {
   brandDna?: BrandDna | null;
   /** Personal Marketing Partner memory (name, niche, writing style). */
   partnerMemory?: PartnerMemory | null;
+  /** Wingman activity memory (posts, wins) from user_marketing_profiles. */
+  marketingProfile?: UserMarketingProfile | null;
   referenceImages?: ReferenceImage[];
   /** Anti-lock comparison only — never inject into chat history as a template. */
   previousImagePrompt?: string | null;
@@ -60,7 +63,7 @@ export function takeSlidingWindow(history: ChatTurn[]): ChatTurn[] {
 }
 
 export function randomFalSeed(): number {
-  return Math.floor(Math.random() * 10_000_000);
+  return Math.floor(Math.random() * 2147483647);
 }
 
 /** Normalize for anti-lock comparison (ignore case/whitespace). */

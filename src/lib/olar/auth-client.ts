@@ -148,4 +148,10 @@ export async function signOutAndClear(): Promise<void> {
   clearAllClientDrafts({ userId: uid, clearOAuthBridge: true });
   const { clearGuestSession } = await import("@/lib/olar/client-storage");
   clearGuestSession();
+  try {
+    const { clearStudioSession } = await import("@/lib/store");
+    clearStudioSession();
+  } catch {
+    /* ignore */
+  }
 }

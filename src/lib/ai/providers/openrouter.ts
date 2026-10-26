@@ -36,13 +36,22 @@ const SECONDARY_MODEL = OPENROUTER_MODELS[2]; // gpt-4o-mini (cursorrules fallba
 const REQUEST_TIMEOUT_MS = 28_000;
 
 function extractJson(text: string): unknown {
-  const trimmed = text.trim();
+  const trimmed = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
   try {
     return JSON.parse(trimmed);
   } catch {
-    const match = trimmed.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("OpenRouter: no JSON object in response");
-    return JSON.parse(match[0]);
+    try {
+      const match = trimmed.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error("OpenRouter: no JSON object in response");
+      return JSON.parse(match[0]);
+    } catch (err) {
+      throw err instanceof Error
+        ? err
+        : new Error("OpenRouter: JSON parse failed");
+    }
   }
 }
 

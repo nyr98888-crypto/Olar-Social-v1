@@ -4,6 +4,8 @@
  */
 import { NextResponse } from "next/server";
 import { getAppSession } from "@/lib/auth/session";
+import { createClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { recordPostActivity } from "@/lib/olar/user-marketing-profile";
 import {
   parseCampaignPosts,
   type CampaignPost,
@@ -107,6 +109,21 @@ export async function POST(request: Request) {
         soft_message: FALLBACK_SOFT_FAIL_HE,
         posts: [],
       });
+    }
+
+    if (session.mode === "supabase" && isSupabaseConfigured()) {
+      try {
+        const supabase = await createClient();
+        await recordPostActivity(supabase, session.user.id, {
+          topic,
+          category: body.category || null,
+        });
+      } catch (err) {
+        console.warn(
+          "[api/campaign] marketing profile soft-fail",
+          err instanceof Error ? err.message : err
+        );
+      }
     }
 
     return NextResponse.json({

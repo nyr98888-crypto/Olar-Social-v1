@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { SocialNetwork } from "@/lib/olar/types";
 import { C } from "@/lib/olar/ui-copy";
 import { BrandGlyph } from "./NetworkBrand";
@@ -36,12 +37,12 @@ function glyphId(
   return "instagram";
 }
 
-/** IG + WA = 1:1; Google = 16:9; Facebook = 4:3 storytelling shell. */
+/** Balanced preview frames — capped height, center crop, no harsh edge cut. */
 function aspectClass(network: SocialNetwork): string {
-  if (network === "google") return "aspect-video";
+  if (network === "google") return "aspect-video max-h-[380px]";
   if (network === "instagram" || network === "reels" || network === "whatsapp")
-    return "aspect-square";
-  return "aspect-[4/3]";
+    return "aspect-square max-h-[380px]";
+  return "aspect-[4/3] max-h-[380px]";
 }
 
 function ImageSkeleton({ label }: { label: string }) {
@@ -174,6 +175,8 @@ export function PostCardPreview({
   onRetryImage,
   waHref,
   className = "",
+  /** Dual-track FB/IG publish actions (Studio) */
+  publishActions,
 }: {
   network: SocialNetwork;
   businessName: string;
@@ -186,6 +189,7 @@ export function PostCardPreview({
   onRetryImage?: () => void;
   waHref?: string | null;
   className?: string;
+  publishActions?: ReactNode;
 }) {
   const tag = platformLabel(network);
   const hashtags = (post.hashtags || [])
@@ -199,7 +203,7 @@ export function PostCardPreview({
 
   return (
     <article
-      className={`w-full max-w-md rounded-2xl border border-slate-200 bg-white text-right shadow-md ${className}`}
+      className={`w-full rounded-2xl border border-slate-200 bg-white text-right shadow-md ${className || "max-w-md"}`}
       dir="rtl"
     >
       {/* Header: business + platform tag — UI shell only */}
@@ -227,9 +231,9 @@ export function PostCardPreview({
         </div>
       </div>
 
-      {/* Ad image — skeleton only while loading; empty muted state otherwise */}
+      {/* Ad image — full-width, capped height, center-balanced crop */}
       <div
-        className={`relative w-full overflow-hidden bg-slate-100 ${aspectClass(network)}`}
+        className={`relative mx-auto w-full overflow-hidden rounded-xl bg-slate-100 ${aspectClass(network)}`}
       >
         {showSkeleton ? (
           <ImageSkeleton
@@ -238,9 +242,10 @@ export function PostCardPreview({
         ) : imageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
+            key={imageUrl}
             src={imageUrl}
             alt=""
-            className="h-full w-full object-cover object-center"
+            className="h-full w-full max-h-[380px] object-cover object-center"
           />
         ) : (
           <div
@@ -326,19 +331,23 @@ export function PostCardPreview({
               <MessageCircle className="h-5 w-5 shrink-0" />
               <span className="break-words">{C.waSendMessage}</span>
             </a>
-          ) : network !== "google" ? (
+          ) : network !== "google" && !publishActions ? (
             <div className="mx-4 mb-4 flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 text-base font-bold text-white">
               <MessageCircle className="h-5 w-5 shrink-0" />
               <span className="break-words">{C.waSendMessage}</span>
             </div>
-          ) : (
+          ) : network === "google" && !publishActions ? (
             <div className="mx-4 mb-4 flex min-h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-base font-bold text-white">
               <Phone className="h-5 w-5 shrink-0" />
               <span className="break-words">
                 {post.call_to_action || C.gbpCallNow}
               </span>
             </div>
-          )}
+          ) : null}
+
+          {publishActions ? (
+            <div className="mx-4 mb-4">{publishActions}</div>
+          ) : null}
         </>
       )}
     </article>

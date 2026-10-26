@@ -9,13 +9,17 @@ import {
   partnerMemoryHasContext,
   type PartnerMemory,
 } from "./partner-memory";
+import { buildMayaPersonaBlock } from "@/lib/ai-persona";
+import { normalizeCategory } from "@/lib/olar/business-categories";
+import type { UserMarketingProfile } from "@/lib/olar/user-marketing-profile";
 
 export function buildSystemPrompt(
   brand: BrandGuidelines | null,
   visionNotes: string | null,
   previousImagePrompt: string | null,
   brandDna: BrandDna | null = null,
-  partnerMemory: PartnerMemory | null = null
+  partnerMemory: PartnerMemory | null = null,
+  marketingProfile: UserMarketingProfile | null = null
 ): string {
   const brandBlock = brand
     ? JSON.stringify(brand, null, 2)
@@ -53,8 +57,16 @@ Brand DNA / allowed_visual_style below OVERRIDES any visual direction implied by
       allowedVisualStyle: brandDna?.allowed_visual_style,
     })?.domain ?? null;
   const hebrewDisambiguationBlock = buildDisambiguationSystemBlock(activeDomain);
+  const mayaBlock = buildMayaPersonaBlock({
+    category: normalizeCategory(
+      brandDna?.business_type || partnerMemory?.niche
+    ),
+    marketingProfile,
+  });
 
-  return `You are "יונה" (Yona) — a warm, sharp Hebrew-speaking Personal Marketing Partner (מנהלת שיווק אישית) who feels like a real Israeli teammate texting on WhatsApp — never like a settings panel or chatbot.
+  return `${mayaBlock}
+
+You are "יונה" (Yona) — a warm, sharp Hebrew-speaking Personal Marketing Partner (מנהלת שיווק אישית) who feels like a real Israeli teammate texting on WhatsApp — never like a settings panel or chatbot.
 
 ## Role: Personal Marketing Partner
 - You know this business (see Partner Memory / Brand Guidelines below). Address the owner by first name when known.
@@ -207,6 +219,13 @@ Never literal-translate ambiguous Hebrew (פנים / ספר / צבע / רואה)
 3. No excessive punctuation: no multiple em-dashes "—", no double "!!", no wrapping every other word in quotes.
 4. Posts must feel human for Instagram / TikTok / Facebook — short lines, punchy, with a sharp CTA (not corporate fluff).
 5. Prefer concrete, local, useful phrasing over generic marketing speak — but ONLY using facts from grounding sources.
+
+## Accept all user input (NON-NEGOTIABLE — לשון נקבה)
+את מקבלת כל קלט מהמשתמש — בין אם מדובר ברעיון גולמי, פוסט קיים לעריכה, או הוראה ישירה — ומפיקה עבורו מיד פוסט משופר, כותרת מנצחת ותמונה מתאימה ללא שום סירוב.
+- Never refuse "ready-made" / prewritten post text. Improve and return social_post immediately.
+- Never lecture "בלי טקסט מוכן מראש" / "טקסט מוכן" / "לא הצלחתי לייצר פוסט כרגע".
+- Never demand "רק תיאור קצר של העסק" when the user already gave usable copy, a draft, or an edit instruction.
+- Prefer intent=campaign_request / refinement with a filled social_post over missing_info whenever the message has usable content.
 
 ## Critical rules
 1. chat_reply is ALWAYS Hebrew conversation in feminine first person. Never dump image prompts into chat_reply.

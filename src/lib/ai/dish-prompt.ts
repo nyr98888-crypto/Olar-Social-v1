@@ -16,7 +16,7 @@ export const DISH_MAP: DishHint[] = [
     id: "jachnun",
     keys: ["ג'חנון", "ג׳חנון", "גחנון", "jachnun", "jahnun"],
     englishPrompt:
-      "Professional appetizing culinary food photography of authentic traditional Yemenite Jachnun, golden-brown rolled layered pastry served on a dark rustic wooden tray. Accompanied by a small bowl of fresh grated red tomato puree, a small dish of spicy green schug condiment, and a brown slow-cooked hard-boiled egg. Warm weekend morning sunlight, shallow depth of field, authentic Israeli food styling, 8k resolution, shot on 85mm lens. avoid: croissant, powdered sugar, french pastry, bread loaf, sweet dessert, salad, european bakery",
+      "Authentic Yemenite Jachnun rolls fresh on a dark rustic wooden tray, grated fresh red tomato dip, schug, brown slow-cooked hard-boiled egg, morning sunlight, commercial Israeli food photography, 8k. avoid: croissant, pastry powder, european bakery, sweet cake, salad bowl",
   },
   {
     id: "malawach",
@@ -146,7 +146,7 @@ export function resolveDishBiasedPrompt(opts: {
 
 /** Negatives baked into Flux prompts (FAL schnell has no negative_prompt param). */
 export const JACHNUN_NEGATIVES =
-  "croissant, powdered sugar, french pastry, bread loaf, sweet dessert, salad, european bakery";
+  "croissant, pastry powder, european bakery, sweet cake, salad bowl";
 
 export function isJachnunText(text: string): boolean {
   return Boolean(extractDishFromText(text)?.id === "jachnun");

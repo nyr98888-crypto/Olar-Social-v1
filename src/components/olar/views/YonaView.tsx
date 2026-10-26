@@ -308,7 +308,14 @@ export function YonaView() {
       ? legacyNicheFromCategory(category)
       : profileNiche;
 
-    const seed = Math.floor(Math.random() * 1_000_000);
+    const { withRegenAngleHint, bustImageUrl } = await import(
+      "@/lib/olar/image-cache-bust"
+    );
+    const newSeed = Math.floor(Math.random() * 2147483647);
+    const updatedPrompt = withRegenAngleHint(
+      `${desc}, dynamic close-up angle, professional garage lighting`
+    );
+    setImageUrl(null);
     setImageLoading(true);
     setImagePending(false);
     setImageIsFallback(false);
@@ -317,16 +324,19 @@ export function YonaView() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          description: desc,
-          prompt: desc,
+          description: updatedPrompt,
+          prompt: updatedPrompt,
           purpose: "post",
           aspectRatio: aspectRatioForChannel(previewChannel),
           businessName: page.businessName,
           niche: nicheForApi,
           category: category ?? undefined,
-          seed,
+          seed: newSeed,
+          bustCache: Date.now(),
+          regenerate: true,
+          previousPrompt: loadCurrentPost()?.image_prompt || null,
         }),
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(45_000),
       });
       const data = (await res.json().catch(() => ({}))) as {
         fallback?: boolean;
@@ -335,6 +345,7 @@ export function YonaView() {
         imageUrl?: string;
       };
       let url = data.image?.url || data.imageUrl;
+      if (url) url = bustImageUrl(url) || `${url}?t=${Date.now()}`;
       let usedClientFallback = false;
       if (!url || url.startsWith("data:image/svg")) {
         url = getCategoryFallback(category || profileNiche, desc);
@@ -807,13 +818,21 @@ export function YonaView() {
                 disabled={busy}
                 selectedId={selectedCategory}
                 onSelect={(text, id) => {
-                  setSelectedCategory(id ?? null);
+                  setSelectedCategory((prev) => {
+                    if (id == null) return null;
+                    return prev === id ? null : id;
+                  });
                   const trimmed = prompt.trim();
                   const canFill =
                     !trimmed ||
                     (filledFromChip != null &&
                       trimmed === filledFromChip.trim());
-                  if (canFill) {
+                  if (id == null) {
+                    if (canFill) {
+                      setPrompt("");
+                      setFilledFromChip(null);
+                    }
+                  } else if (canFill) {
                     setPrompt(text);
                     setFilledFromChip(text);
                   }

@@ -13,6 +13,7 @@ export type { BusinessCategoryId };
 const TEMPLATES: Record<BusinessCategoryId, string> = {
   architecture: C.nicheInteriorTemplate,
   beauty: C.nicheClinicTemplate,
+  nails_beauty: C.nicheNailsTemplate,
   food: C.nicheRestaurantTemplate,
   hair_salon: C.nicheSalonTemplate,
   legal_accounting: C.nicheLegalTemplate,
@@ -23,6 +24,12 @@ const TEMPLATES: Record<BusinessCategoryId, string> = {
   bakery: C.nicheBakeryTemplate,
   real_estate: C.nicheRealEstateTemplate,
   wellness: C.nicheWellnessTemplate,
+  events_photo: C.nicheEventsTemplate,
+  pets: C.nichePetsTemplate,
+  cleaning_moving: C.nicheCleaningTemplate,
+  courses_workshops: C.nicheCoursesTemplate,
+  fashion_jewelry: C.nicheFashionTemplate,
+  custom: C.nicheCustomTemplate,
 };
 
 const CHIPS: { id: BusinessCategoryId; label: string; template: string }[] =
@@ -33,16 +40,19 @@ const CHIPS: { id: BusinessCategoryId; label: string; template: string }[] =
   }));
 
 type Props = {
-  onSelect: (text: string, id?: BusinessCategoryId) => void;
+  /** Pass id=null when the same chip is toggled off. */
+  onSelect: (text: string, id?: BusinessCategoryId | null) => void;
   selectedId?: BusinessCategoryId | null;
   disabled?: boolean;
 };
 
 export function ExampleChips({ onSelect, selectedId, disabled }: Props) {
   return (
-    <div className="w-full space-y-2 text-right" dir="rtl">
-      <p className="text-xs font-medium text-slate-500">{C.tryExampleLabel}</p>
-      <div className="-mx-1 flex flex-wrap justify-start gap-2 sm:mx-0">
+    <div className="mx-auto w-full max-w-5xl space-y-1.5 text-center" dir="rtl">
+      <p className="text-xs font-medium text-slate-500">
+        {C.landChipsHeading || C.tryExampleLabel}
+      </p>
+      <div className="flex flex-wrap justify-center gap-1.5">
         {CHIPS.map((chip) => {
           const active = selectedId === chip.id;
           return (
@@ -50,10 +60,16 @@ export function ExampleChips({ onSelect, selectedId, disabled }: Props) {
               key={chip.id}
               type="button"
               disabled={disabled}
-              onClick={() => onSelect(chip.template, chip.id)}
-              className={`rounded-full border px-3.5 py-2 text-sm shadow-sm transition-all disabled:pointer-events-none disabled:opacity-40 ${
+              onClick={() => {
+                if (active) {
+                  onSelect("", null);
+                } else {
+                  onSelect(chip.template, chip.id);
+                }
+              }}
+              className={`rounded-lg border px-2.5 py-1 text-xs transition-all disabled:pointer-events-none disabled:opacity-40 ${
                 active
-                  ? "border-cyan-500 bg-cyan-50/70 text-cyan-950 font-bold ring-2 ring-cyan-500/20"
+                  ? "border-cyan-500 bg-cyan-50/70 font-bold text-cyan-950 ring-1 ring-cyan-500/20"
                   : "border-slate-200 bg-white font-medium text-slate-700 hover:border-cyan-400 hover:bg-cyan-50 hover:text-cyan-700"
               }`}
             >
