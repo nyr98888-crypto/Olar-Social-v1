@@ -55,7 +55,7 @@ export function RightDock({
       />
 
       <div
-        className={`fixed inset-0 z-50 bg-slate-900/25 transition-opacity duration-300 ${
+        className={`fixed inset-0 z-50 bg-slate-950/40 transition-opacity duration-300 ${
           open ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
         onClick={() => onOpenChange(false)}
@@ -63,7 +63,7 @@ export function RightDock({
       />
 
       <aside
-        className={`fixed inset-y-0 right-0 z-50 flex w-[min(100%,20rem)] flex-col bg-panel shadow-[var(--shadow)] transition-transform duration-300 ease-out ${
+        className={`fixed inset-y-0 right-0 z-50 flex w-[min(100%,20rem)] flex-col border-l border-slate-800/90 bg-[#0B0F19] text-white shadow-2xl transition-transform duration-300 ease-out ${
           open
             ? "translate-x-0"
             : "pointer-events-none translate-x-full"
@@ -99,14 +99,14 @@ export function RightDock({
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="flex h-12 w-12 items-center justify-center rounded-xl border border-white/10 text-white/80 hover:bg-white/10 hover:text-white"
+            className="flex h-12 w-12 items-center justify-center rounded-xl text-slate-400 transition hover:text-white"
             aria-label={C.close}
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-3">
+        <nav className="flex-1 overflow-y-auto bg-[#0B0F19] p-3">
           <ul className="space-y-1">
             {NAV.map((item) => {
               const Icon = item.icon;
@@ -119,13 +119,17 @@ export function RightDock({
                       onNavigate(item.id);
                       onOpenChange(false);
                     }}
-                    className={`olar-btn flex min-h-14 w-full items-center gap-3 px-4 text-right text-base font-medium ${
+                    className={`olar-btn flex min-h-14 w-full items-center gap-3 rounded-xl px-4 py-3 text-right text-base transition ${
                       isActive
-                        ? "bg-accent text-white"
-                        : "text-slate-900 hover:bg-paper-deep/50"
+                        ? "border-s-2 border-cyan-400 bg-gradient-to-r from-cyan-500/15 to-blue-500/10 font-semibold text-cyan-400"
+                        : "font-medium text-slate-300 hover:bg-slate-900/80 hover:text-white"
                     }`}
                   >
-                    <Icon className="h-5 w-5 shrink-0" />
+                    <Icon
+                      className={`h-5 w-5 shrink-0 ${
+                        isActive ? "text-cyan-400" : "text-slate-400"
+                      }`}
+                    />
                     <span className="min-w-0 flex-1 truncate">{item.label}</span>
                   </button>
                 </li>

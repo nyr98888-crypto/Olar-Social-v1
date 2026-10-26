@@ -4,12 +4,14 @@
  * Hebrew stored as UTF-8 in-source (never via PowerShell).
  */
 import type { AgentOutput, GeneratedPostResponse } from "../../../schemas/agent";
+import { disambiguateBusinessDomain } from "./hebrew-disambiguation";
 import type { PostInputContext } from "./pipeline-validator";
 import { NEUTRAL_PRICE_CTA } from "./guardrails";
 
 export type GoldenNiche =
   | "garage"
   | "cosmetics"
+  | "interior"
   | "restaurant"
   | "general";
 
@@ -56,6 +58,17 @@ const GOLDEN: Record<GoldenNiche, GoldenTpl> = {
       "הכנתי לך פוסט מוכן למסעדה/בית קפה — אפשר לערוך וללטש כרצונך.",
     hashtags: ["#אוכל", "#קפה", "#עסקמקומי"],
   },
+  interior: {
+    headline: "הבית שלכם מחכה לשדרוג",
+    postText:
+      "כל חלל מספר סיפור — בואו נתכנן יחד את הסיפור שלכם.\nכתבו לנו בוואטסאפ לפגישת ייעוץ ראשונית.",
+    callToAction: "לתיאום ייעוץ בוואטסאפ",
+    suggestedImagePrompt:
+      "Award-winning modern interior architecture, elegant open-space living room, bespoke furniture, soft architectural ambient lighting, architectural photography, hyper-realistic, 8k, professional portfolio shot, no text overlay, no logos",
+    chatReply:
+      "הכנתי לך פוסט מוכן לעסק עיצוב הפנים — אפשר לערוך וללטש כרצונך.",
+    hashtags: ["#עיצובפנים", "#אדריכלות", "#עסקמקומי"],
+  },
   general: {
     headline: "השבוע פתחנו מקומות אחרונים",
     postText:
@@ -69,31 +82,55 @@ const GOLDEN: Record<GoldenNiche, GoldenTpl> = {
   },
 };
 
+/**
+ * Interior compound phrases FIRST — prevents "עיצוב פנים" matching cosmetics.
+ * Bare "פנים" removed from cosmetics; explicit beauty words only.
+ */
 const KEYWORD_MAP: { keys: string[]; niche: GoldenNiche }[] = [
+  {
+    keys: [
+      "אדריכלות פנים", "עיצוב פנים", "מעצב פנים", "מעצבת פנים",
+      "עיצוב חללים", "אדריכל פנים", "interior design", "interior architecture",
+    ],
+    niche: "interior",
+  },
   {
     keys: ["מוסך", "רכב", "garage", "צמיג", "מכונאי", "שמן מנוע"],
     niche: "garage",
   },
   {
-    keys: ["קוסמט", "יופי", "beauty", "פנים", "ציפורניים", "מספרה"],
+    keys: [
+      "קוסמט", "מכון יופי", "קליניקה אסתטית", "בוטוקס",
+      "הסרת שיער", "ציפורניים", "ספא", "עור", "יופי", "beauty",
+    ],
     niche: "cosmetics",
   },
   {
     keys: [
-      "מסעדה",
-      "קפה",
-      "cafe",
-      "restaurant",
-      "אוכל",
-      "מאפה",
-      "פיצה",
-      "סושי",
+      "מסעדה", "קפה", "cafe", "restaurant",
+      "אוכל", "מאפה", "פיצה", "סושי",
     ],
     niche: "restaurant",
   },
 ];
 
+const DOMAIN_TO_GOLDEN: Record<string, GoldenNiche> = {
+  interior: "interior",
+  cosmetics: "cosmetics",
+  garage: "garage",
+  cafe: "restaurant",
+  salon: "general",
+  painting: "general",
+  accountant: "general",
+  locksmith: "general",
+};
+
 export function detectGoldenNiche(raw: string): GoldenNiche {
+  const hit = disambiguateBusinessDomain({ text: raw, niche: raw });
+  if (hit) {
+    const mapped = DOMAIN_TO_GOLDEN[hit.domain.nicheId];
+    if (mapped) return mapped;
+  }
   const lower = (raw || "").toLowerCase();
   for (const row of KEYWORD_MAP) {
     if (row.keys.some((k) => lower.includes(k.toLowerCase()))) return row.niche;

@@ -1,16 +1,34 @@
 /**
  * Two-Step Visual Synthesizer — Category Style Blueprints + Guardrail.
  * Authoritative English-only prompts for FAL Flux. Never sends Hebrew.
+ * Hebrew compounds resolved via hebrew-disambiguation BEFORE keyword fallback.
  */
+import {
+  applyDomainPromptGuardrail,
+  disambiguateBusinessDomain,
+  SEMANTIC_DOMAINS,
+  type SemanticDomain,
+  type SemanticDomainId,
+} from "./hebrew-disambiguation";
 
 export type VisualCategory =
   | "AUTOMOTIVE"
   | "BEAUTY"
   | "FOOD"
+  | "INTERIOR"
+  | "SALON"
+  | "PAINTING"
+  | "ACCOUNTING"
+  | "LOCKSMITH"
   | "GENERAL_TRADE";
 
 /** @deprecated use VisualCategory — kept for callers mapping GoldenNiche */
-export type FalVisualNiche = "garage" | "cosmetics" | "restaurant" | "general";
+export type FalVisualNiche =
+  | "garage"
+  | "cosmetics"
+  | "restaurant"
+  | "interior"
+  | "general";
 
 export type FalImageSize = "landscape_4_3" | "square";
 
@@ -35,9 +53,58 @@ export const CATEGORY_BLUEPRINTS: Record<VisualCategory, string> = {
     "Luxury minimalist aesthetic clinic, soft pastel, macro nails/glowing skin, beauty ring light, commercial editorial, ultra clean, 4k",
   FOOD:
     "Appetizing commercial food photography, gourmet dish, morning sunlight, vibrant, f/2.8, magazine quality",
+  INTERIOR:
+    "Award-winning modern interior architecture, elegant open-space living room, bespoke furniture, soft architectural ambient lighting, architectural photography, hyper-realistic, 8k, professional portfolio shot",
+  SALON:
+    "Modern professional hair salon, stylist cutting or styling hair, clean bright salon interior, commercial beauty-service photography, sharp focus, 4k",
+  PAINTING:
+    "Professional house painter renovating a bright residential interior, fresh wall paint and plastering tools, clean home renovation photography, natural daylight, commercial trades service",
+  ACCOUNTING:
+    "Professional accounting and finance business office, desk with documents and laptop, clean contemporary workspace, trustworthy commercial photography, bright daylight",
+  LOCKSMITH:
+    "Professional certified locksmith service, locksmith opening a residential door with professional tools, trustworthy trades photography, bright daylight, clean commercial ad",
   GENERAL_TRADE:
     "Professional tradesman in modern bright home interior, quality tools, natural light, commercial service photography",
 };
+
+const DOMAIN_TO_CATEGORY: Record<SemanticDomainId, VisualCategory> = {
+  interior_architecture: "INTERIOR",
+  hair_salon: "SALON",
+  wall_painting: "PAINTING",
+  accounting: "ACCOUNTING",
+  locksmith: "LOCKSMITH",
+  cosmetics: "BEAUTY",
+  automotive: "AUTOMOTIVE",
+  food: "FOOD",
+};
+
+const CATEGORY_TO_DOMAIN_ID: Partial<Record<VisualCategory, SemanticDomainId>> =
+  {
+    INTERIOR: "interior_architecture",
+    SALON: "hair_salon",
+    PAINTING: "wall_painting",
+    ACCOUNTING: "accounting",
+    LOCKSMITH: "locksmith",
+    BEAUTY: "cosmetics",
+    AUTOMOTIVE: "automotive",
+    FOOD: "food",
+  };
+
+export function categoryFromSemanticDomain(
+  domain: SemanticDomain | null | undefined
+): VisualCategory | null {
+  if (!domain) return null;
+  return DOMAIN_TO_CATEGORY[domain.id] ?? null;
+}
+
+export function domainFromCategory(
+  category?: VisualCategory | null
+): SemanticDomain | null {
+  if (!category) return null;
+  const id = CATEGORY_TO_DOMAIN_ID[category];
+  if (!id) return null;
+  return SEMANTIC_DOMAINS.find((d) => d.id === id) ?? null;
+}
 
 /** Mandatory append after safety filter (Art Director pipeline). */
 export const GUARDRAIL_TAIL =
@@ -48,7 +115,25 @@ const DARK_SCENE_RE =
 
 const HEBREW_RE = /[\u0590-\u05FF]/;
 
+/**
+ * Interior compound phrases checked FIRST so "עיצוב פנים" / "אדריכלות פנים"
+ * never falls through to BEAUTY. Bare "פנים" removed from BEAUTY.
+ */
 const CATEGORY_KEYWORDS: { keys: string[]; category: VisualCategory }[] = [
+  {
+    keys: [
+      "אדריכלות פנים",
+      "עיצוב פנים",
+      "מעצב פנים",
+      "מעצבת פנים",
+      "עיצוב חללים",
+      "אדריכל פנים",
+      "interior design",
+      "interior architecture",
+      "interior",
+    ],
+    category: "INTERIOR",
+  },
   {
     keys: [
       "מוסך",
@@ -69,11 +154,15 @@ const CATEGORY_KEYWORDS: { keys: string[]; category: VisualCategory }[] = [
   },
   {
     keys: [
-      "יופי",
+      "מכון יופי",
+      "קליניקה אסתטית",
+      "בוטוקס",
+      "הסרת שיער",
       "קוסמט",
-      "פנים",
       "ציפורנ",
       "ספא",
+      "עור",
+      "יופי",
       "beauty",
       "nail",
       "facial",
@@ -101,7 +190,19 @@ const CATEGORY_KEYWORDS: { keys: string[]; category: VisualCategory }[] = [
   },
 ];
 
+/**
+ * Interior scenes listed BEFORE cosmetics "facial" to ensure
+ * "עיצוב פנים" / "אדריכלות פנים" produce architecture shots, not faces.
+ */
 const KEYWORD_SCENE_MAP: { keys: string[]; scene: string }[] = [
+  {
+    keys: ["אדריכלות פנים", "עיצוב פנים", "מעצב פנים", "מעצבת פנים", "אדריכל פנים"],
+    scene: "award-winning modern interior architecture, elegant living room with bespoke furniture and soft architectural ambient lighting",
+  },
+  {
+    keys: ["עיצוב חללים", "interior design", "interior architecture"],
+    scene: "luxury open-plan residential space, designer kitchen island, warm natural light, architectural portfolio photography",
+  },
   {
     keys: ["מגבים", "wiper", "wipers"],
     scene: "mechanic checking windshield wipers on a gleaming car",
@@ -146,6 +247,12 @@ export function stripHebrew(text: string): string {
 export function detectVisualCategory(
   ...sources: Array<string | null | undefined>
 ): VisualCategory {
+  const hit = disambiguateBusinessDomain({
+    text: sources.filter(Boolean).join(" "),
+  });
+  const fromDomain = categoryFromSemanticDomain(hit?.domain);
+  if (fromDomain) return fromDomain;
+
   const blob = sources.filter(Boolean).join(" ").toLowerCase();
   for (const row of CATEGORY_KEYWORDS) {
     if (row.keys.some((k) => blob.includes(k.toLowerCase()))) {
@@ -155,34 +262,15 @@ export function detectVisualCategory(
   return "GENERAL_TRADE";
 }
 
-/** Map legacy golden niches ↔ categories */
+/** Map legacy golden niches ↔ categories — semantic domain first */
 export function nicheToCategory(niche?: string | null): VisualCategory {
-  const n = (niche || "").toLowerCase();
-  if (
-    n.includes("garage") ||
-    n.includes("auto") ||
-    n.includes("מוסך") ||
-    n.includes("רכב")
-  ) {
-    return "AUTOMOTIVE";
-  }
-  if (
-    n.includes("cosmetic") ||
-    n.includes("beauty") ||
-    n.includes("יופי") ||
-    n.includes("קוסמט")
-  ) {
-    return "BEAUTY";
-  }
-  if (
-    n.includes("restaurant") ||
-    n.includes("cafe") ||
-    n.includes("food") ||
-    n.includes("קפה") ||
-    n.includes("מסעד")
-  ) {
-    return "FOOD";
-  }
+  const hit = disambiguateBusinessDomain({
+    niche,
+    businessType: niche,
+    text: niche,
+  });
+  const fromDomain = categoryFromSemanticDomain(hit?.domain);
+  if (fromDomain) return fromDomain;
   return detectVisualCategory(niche);
 }
 
@@ -193,7 +281,21 @@ export function resolveFalNiche(
   if (cat === "AUTOMOTIVE") return "garage";
   if (cat === "BEAUTY") return "cosmetics";
   if (cat === "FOOD") return "restaurant";
+  if (cat === "INTERIOR") return "interior";
   return "general";
+}
+
+/** Resolve verified semantic domain for callers (image-service / fal / translate). */
+export function resolvePromptDomain(
+  ...sources: Array<string | null | undefined>
+): SemanticDomain | null {
+  return (
+    disambiguateBusinessDomain({
+      text: sources.filter(Boolean).join(" "),
+      niche: sources[0],
+      businessType: sources[0],
+    })?.domain ?? null
+  );
 }
 
 function mapKeywordsToScenes(raw: string): string[] {
@@ -217,12 +319,14 @@ function englishOnlyHint(text: string | null | undefined): string {
 /**
  * Code double-check before FAL:
  * - strip Hebrew
+ * - semantic domain negatives baked as "avoid: ..." (FLUX has no negative_prompt)
  * - replace dark/night scenes with bright commercial daylight
  * - always append lighting + no-text guardrail tail
  */
 export function applyVisualPromptGuardrail(
   prompt: string,
-  category?: VisualCategory | null
+  category?: VisualCategory | null,
+  domain?: SemanticDomain | null
 ): string {
   let next = (prompt || "").trim();
   if (hasHebrewScript(next)) next = stripHebrew(next);
@@ -235,8 +339,16 @@ export function applyVisualPromptGuardrail(
   }
   DARK_SCENE_RE.lastIndex = 0;
 
+  const resolvedDomain = domain || domainFromCategory(category);
+
   if (!next) {
-    next = CATEGORY_BLUEPRINTS[category || "GENERAL_TRADE"];
+    next =
+      resolvedDomain?.positiveVisual ||
+      CATEGORY_BLUEPRINTS[category || "GENERAL_TRADE"];
+  }
+
+  if (resolvedDomain) {
+    next = applyDomainPromptGuardrail(next, resolvedDomain);
   }
 
   if (!/bright daytime commercial photography/i.test(next)) {
@@ -261,8 +373,27 @@ export function applyVisualPromptGuardrail(
  * Merge topic fragments with category blueprint (sync fallback when LLM unavailable).
  */
 export function buildFalVisualPrompt(opts: BuildFalVisualPromptOpts): string {
+  const rawBlob = [
+    opts.hebrewPrompt,
+    opts.userHint,
+    opts.englishPrompt,
+    opts.niche,
+    opts.allowedVisualStyle,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const domain =
+    disambiguateBusinessDomain({
+      text: rawBlob,
+      niche: opts.niche,
+      businessType: opts.niche,
+      allowedVisualStyle: opts.allowedVisualStyle,
+    })?.domain ?? null;
+
   const category =
     opts.category ||
+    categoryFromSemanticDomain(domain) ||
     detectVisualCategory(
       opts.niche,
       opts.allowedVisualStyle,
@@ -271,16 +402,7 @@ export function buildFalVisualPrompt(opts: BuildFalVisualPromptOpts): string {
       opts.englishPrompt
     );
 
-  const blueprint = CATEGORY_BLUEPRINTS[category];
-  const rawBlob = [
-    opts.hebrewPrompt,
-    opts.userHint,
-    opts.englishPrompt,
-    opts.niche,
-  ]
-    .filter(Boolean)
-    .join(" ");
-
+  const blueprint = domain?.positiveVisual || CATEGORY_BLUEPRINTS[category];
   const keywordScenes = mapKeywordsToScenes(rawBlob);
   const styleEn = englishOnlyHint(opts.allowedVisualStyle);
   const hintEn = englishOnlyHint(opts.userHint);
@@ -295,8 +417,12 @@ export function buildFalVisualPrompt(opts: BuildFalVisualPromptOpts): string {
 
   if (usableLlmPrompt) {
     parts.push(usableLlmPrompt);
-    // Keep blueprint DNA when LLM omitted lighting/workshop cues
-    if (!/workshop|clinic|food photography|tradesman|daylight/i.test(usableLlmPrompt)) {
+    // Keep blueprint DNA when LLM omitted lighting/workshop/interior cues
+    if (
+      !/workshop|clinic|food photography|tradesman|interior|architectural|daylight|hair salon|locksmith|accounting|wall paint/i.test(
+        usableLlmPrompt
+      )
+    ) {
       parts.push(blueprint);
     }
   } else {
@@ -332,7 +458,7 @@ export function buildFalVisualPrompt(opts: BuildFalVisualPromptOpts): string {
   }
 
   const merged = parts.join(", ");
-  return applyVisualPromptGuardrail(merged, category);
+  return applyVisualPromptGuardrail(merged, category, domain);
 }
 
 /**
@@ -359,5 +485,6 @@ export const NICHE_TEMPLATES: Record<FalVisualNiche, string> = {
   garage: CATEGORY_BLUEPRINTS.AUTOMOTIVE,
   cosmetics: CATEGORY_BLUEPRINTS.BEAUTY,
   restaurant: CATEGORY_BLUEPRINTS.FOOD,
+  interior: CATEGORY_BLUEPRINTS.INTERIOR,
   general: CATEGORY_BLUEPRINTS.GENERAL_TRADE,
 };

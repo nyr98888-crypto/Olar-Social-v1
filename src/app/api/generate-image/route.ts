@@ -14,6 +14,11 @@ import {
 import { translateToFalEnglishPrompt } from "@/lib/ai/translate-visual-prompt";
 import type { FalVisualPurpose } from "@/lib/ai/fal-visual-prompt";
 import { FALLBACK_SOFT_READY_HE } from "@/lib/ai/fallback-content";
+import {
+  disambiguateBusinessDomain,
+  enrichBrandDnaFromDomain,
+} from "@/lib/ai/hebrew-disambiguation";
+import { expandBrandDnaDefaults } from "../../../../schemas/agent";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -53,14 +58,34 @@ export async function POST(request: Request) {
       body.purpose ||
       (body.aspectRatio === "1:1" ? "headshot" : "post");
 
-    // Step 1+2: Art Director LLM → safety guardrail
+    // Semantic domain cross-check BEFORE Art Director / FAL
+    const domainHit = disambiguateBusinessDomain({
+      text: description,
+      niche: body.niche,
+      businessType: body.niche,
+    });
+    const niche =
+      body.niche ||
+      domainHit?.domain.nicheId ||
+      domainHit?.domain.englishDomain ||
+      null;
+    const brandDna = expandBrandDnaDefaults(
+      enrichBrandDnaFromDomain({
+        business_type: niche || domainHit?.domain.englishDomain || "local business",
+      }) ?? { business_type: niche || "local business" }
+    );
+
+    // Step 1+2: Art Director LLM → domain guardrail (never literal Hebrew)
     const translated = await translateToFalEnglishPrompt({
       description:
         description ||
+        domainHit?.domain.positiveVisual ||
         "local small business commercial photography bright workshop",
-      niche: body.niche,
+      niche,
       businessName: body.businessName,
       purpose,
+      allowedVisualStyle:
+        brandDna?.allowed_visual_style || domainHit?.domain.positiveVisual,
     });
     englishPrompt = translated.prompt;
     source = translated.source;
@@ -68,6 +93,7 @@ export async function POST(request: Request) {
     console.log("[api/generate-image] Art Director ready", {
       source,
       category: translated.category,
+      domainId: translated.domainId ?? domainHit?.domain.id ?? null,
       purpose,
       sample: englishPrompt.slice(0, 160),
     });
@@ -78,8 +104,9 @@ export async function POST(request: Request) {
         prompt: englishPrompt,
         aspectRatio:
           body.aspectRatio ?? (purpose === "headshot" ? "1:1" : "16:9"),
-        niche: body.niche,
+        niche,
         businessName: body.businessName,
+        brandDna,
         purpose: purpose === "headshot" ? "headshot" : "post",
         userContext: description || null,
         fallbackPlaceholder: true,

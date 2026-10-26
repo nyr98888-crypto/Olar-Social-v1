@@ -20,13 +20,13 @@ export function TopTicker({
 
   return (
     <div
-      className="relative flex h-11 w-full shrink-0 items-center gap-2 overflow-hidden border-b border-slate-800 bg-slate-900 text-white"
+      className="relative flex h-11 w-full shrink-0 items-center gap-2 overflow-hidden border-b border-slate-800/90 bg-[#0B0F19] text-white"
       role="status"
       aria-label={C.tickerLive}
     >
-      <div className="z-10 flex h-full shrink-0 items-center gap-1.5 bg-slate-900 px-4">
-        <Megaphone className="h-4 w-4 text-sky-100" aria-hidden />
-        <span className="text-sm font-semibold tracking-wide text-sky-100">
+      <div className="z-10 flex h-full shrink-0 items-center gap-1.5 bg-[#0B0F19] px-4">
+        <Megaphone className="h-4 w-4 text-cyan-300" aria-hidden />
+        <span className="text-sm font-semibold tracking-wide text-slate-200">
           {C.tickerLive}
         </span>
       </div>

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { enrichBrandDnaFromDomain } from "../src/lib/ai/hebrew-disambiguation";
 
 /**
  * Validated campaign post shape (pipeline + UI).
@@ -255,9 +256,10 @@ export function derivePlatformsFromPost(post: SocialPostFields): PlatformPosts {
 }
 
 /**
- * When only business_type is known, derive allowed_visual_style dynamically
- * from that type (no fixed stock scenes). Caller-supplied fields always win.
- * Zero hardcoded visuals: style string is built from the user's niche label only.
+ * When only business_type is known, derive allowed_visual_style dynamically.
+ * Hebrew ambiguous niches go through Negative Token Mapping so e.g.
+ * עיצוב פנים → Interior Architecture (never facial/cosmetics).
+ * Domain negatives always land in forbidden_elements (FLUX has no negative_prompt).
  */
 export function expandBrandDnaDefaults(
   partial: BrandDnaPartial | null | undefined
@@ -265,9 +267,7 @@ export function expandBrandDnaDefaults(
   if (!partial?.business_type?.trim()) return parseBrandDna(partial);
 
   const businessType = partial.business_type.trim();
-  const derivedStyle = `Authentic professional commercial photography for a ${businessType} business, on-niche subjects only, clean contemporary lighting, grounded in real ${businessType} work context — never off-niche stock scenes from unrelated industries`;
 
-  // Cross-niche bans: keep out of this business's visuals (not a scene template)
   const crossNicheBans = [
     "unrelated industry stock photo",
     "random celebrity",
@@ -275,13 +275,30 @@ export function expandBrandDnaDefaults(
     "generic motivational quote poster",
   ];
 
-  return parseBrandDna({
+  const enriched = enrichBrandDnaFromDomain({
     business_type: businessType,
-    allowed_visual_style:
-      partial.allowed_visual_style?.trim() || derivedStyle,
-    forbidden_elements:
-      partial.forbidden_elements?.length
-        ? partial.forbidden_elements
-        : crossNicheBans,
+    allowed_visual_style: partial.allowed_visual_style,
+    forbidden_elements: partial.forbidden_elements,
+  });
+
+  const resolvedType = enriched?.business_type?.trim() || businessType;
+  const derivedStyle =
+    partial.allowed_visual_style?.trim() ||
+    enriched?.allowed_visual_style?.trim() ||
+    `Authentic professional commercial photography for a ${resolvedType} business, on-niche subjects only, clean contemporary lighting, grounded in real ${resolvedType} work context — never off-niche stock scenes from unrelated industries`;
+
+  const forbidden = partial.forbidden_elements?.length
+    ? partial.forbidden_elements
+    : [
+        ...new Set([
+          ...crossNicheBans,
+          ...(enriched?.forbidden_elements ?? []),
+        ]),
+      ];
+
+  return parseBrandDna({
+    business_type: resolvedType,
+    allowed_visual_style: derivedStyle,
+    forbidden_elements: forbidden,
   });
 }

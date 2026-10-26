@@ -32,6 +32,11 @@ export type BusinessProfileLike = {
 const NICHE_HE: Record<string, string> = {
   garage: "מוסך / רכב",
   cosmetics: "יופי וקוסמטיקה",
+  interior: "אדריכלות ועיצוב פנים",
+  salon: "מספרה / עיצוב שיער",
+  painting: "עבודות צבע ושיפוצים",
+  accountant: "רואה חשבון / ייעוץ מס",
+  locksmith: "מנעולן",
   cafe: "קפה / אוכל",
   general: "עסק מקומי",
 };

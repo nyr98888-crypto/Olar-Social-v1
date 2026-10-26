@@ -40,7 +40,16 @@ export type BusinessProfile = {
   rawInput: string;
 };
 
-type NicheId = "garage" | "cosmetics" | "cafe" | "general";
+type NicheId =
+  | "garage"
+  | "cosmetics"
+  | "interior"
+  | "salon"
+  | "painting"
+  | "accountant"
+  | "locksmith"
+  | "cafe"
+  | "general";
 
 const NICHES: Record<
   NicheId,
@@ -107,6 +116,81 @@ const NICHES: Record<
     "postBody": "השבוע פתחנו מקומות אחרונים לטיפול פנים מרענן.\nכתבו בוואטסאפ — נמצא לכן שעה נוחה בלי לחץ.",
     "postCta": "לקביעת תור בוואטסאפ"
   },
+  "interior": {
+    "tagline": "עיצוב פנים שמרגישים — מרחב שמספר סיפור",
+    "description": "סטודיו לאדריכלות ועיצוב פנים — ייעוץ, תכנון חללים והפיכת חלום לבית.",
+    "services": [
+      {
+        "id": "s1",
+        "title": "ייעוץ עיצוב פנים",
+        "desc": "פגישת ייעוץ ראשונית — הבנת סגנון וצרכים",
+        "price": 0
+      },
+      {
+        "id": "s2",
+        "title": "תכנון חלל",
+        "desc": "תוכנית עיצוב מלאה — חומרים, צבעים ותאורה",
+        "price": 0
+      },
+      {
+        "id": "s3",
+        "title": "ליווי פרויקט",
+        "desc": "ליווי מלא מתכנון ועד גמר",
+        "price": 0
+      }
+    ],
+    "postHeadline": "הבית שלכם מחכה לשדרוג",
+    "postBody": "כל חלל מספר סיפור — בואו נתכנן יחד את הסיפור שלכם.\nכתבו לנו בוואטסאפ לפגישת ייעוץ ראשונית.",
+    "postCta": "לתיאום ייעוץ בוואטסאפ"
+  },
+  "salon": {
+    "tagline": "עיצוב שיער מקצועי — יחס אישי בכל תספורת",
+    "description": "מספרה מודרנית עם עיצוב שיער, צבע ואווירה נעימה.",
+    "services": [
+      { "id": "s1", "title": "תספורת", "desc": "תספורת מדויקת לפי מבנה הפנים והסגנון", "price": 0 },
+      { "id": "s2", "title": "עיצוב שיער", "desc": "עיצוב לאירוע או ליום־יום", "price": 0 },
+      { "id": "s3", "title": "צבע וגוונים", "desc": "צבע מקצועי — פרטים בוואטסאפ", "price": 0 }
+    ],
+    "postHeadline": "השיער שלכם מחכה לרענון",
+    "postBody": "תספורת ועיצוב שיער ביחס אישי.\nכתבו בוואטסאפ — נמצא לכם שעה נוחה.",
+    "postCta": "לקביעת תור בוואטסאפ"
+  },
+  "painting": {
+    "tagline": "עבודות צבע נקיות — בלי הפתעות",
+    "description": "צביעת דירות וקירות, טיח ושיפוץ קל — מקצועיות וזמינות בוואטסאפ.",
+    "services": [
+      { "id": "s1", "title": "צביעת דירה", "desc": "צביעה מקצועית — חדרים או דירה מלאה", "price": 0 },
+      { "id": "s2", "title": "תיקוני טיח", "desc": "הכנה וטיח לפני צבע", "price": 0 },
+      { "id": "s3", "title": "שיפוץ קל", "desc": "עבודות צבע ושיפוץ נקודתי", "price": 0 }
+    ],
+    "postHeadline": "הקירות מחכים לרענון",
+    "postBody": "עבודות צבע וטיח מקצועיות לבית.\nכתבו בוואטסאפ להצעת מחיר מהירה.",
+    "postCta": "לתיאום והצעת מחיר בוואטסאפ"
+  },
+  "accountant": {
+    "tagline": "ייעוץ מס וחשבונאות — בשפה ברורה",
+    "description": "רואה חשבון עם ליווי אישי לעסקים קטנים — דוחות, ייעוץ מס וזמינות בוואטסאפ.",
+    "services": [
+      { "id": "s1", "title": "ייעוץ ראשוני", "desc": "שיחה קצרה להבנת הצרכים", "price": 0 },
+      { "id": "s2", "title": "הנהלת חשבונות", "desc": "ליווי שוטף לעסק", "price": 0 },
+      { "id": "s3", "title": "ייעוץ מס", "desc": "תכנון והגשות — פרטים בהודעה", "price": 0 }
+    ],
+    "postHeadline": "החשבונות מסודרים — אתם רגועים",
+    "postBody": "ליווי חשבונאי וייעוץ מס לעסקים קטנים.\nכתבו בוואטסאפ ונחזור אליכם מהר.",
+    "postCta": "לתיאום שיחה בוואטסאפ"
+  },
+  "locksmith": {
+    "tagline": "מנעולן מקצועי — זמין כשצריך",
+    "description": "שירותי מנעולנות מוסמכים — פתיחת דלתות, החלפת מנעולים, בלי דרמה.",
+    "services": [
+      { "id": "s1", "title": "פתיחת דלת", "desc": "פתיחה מקצועית בלי נזק מיותר", "price": 0 },
+      { "id": "s2", "title": "החלפת מנעול", "desc": "התקנה והחלפה מקצועית", "price": 0 },
+      { "id": "s3", "title": "ייעוץ אבטחה", "desc": "המלצה על מנעולים מתאימים", "price": 0 }
+    ],
+    "postHeadline": "ננעלתם בחוץ? אנחנו כאן",
+    "postBody": "שירות מנעולן מקצועי ואמין.\nכתבו בוואטסאפ — נגיע כמה שיותר מהר.",
+    "postCta": "לקריאה מהירה בוואטסאפ"
+  },
   "cafe": {
     "tagline": "קפה טרי, פינה חמה, וחיוך בכל כוס",
     "description": "בית קפה שכונתי עם קפה איכותי, מאפים טריים, ואווירה ביתית.",
@@ -163,39 +247,101 @@ const NICHES: Record<
   }
 };
 
+/**
+ * Matching order matters: interior compound phrases (containing "פנים")
+ * are checked BEFORE cosmetics to avoid misclassifying
+ * "אדריכלות פנים" / "עיצוב פנים" as facial/beauty.
+ * Cosmetics matches only explicit beauty-clinic words — bare "פנים" is removed.
+ */
 const KEYWORD_MAP: { keys: string[]; niche: NicheId }[] = [
   {
-    "keys": [
+    keys: [
+      "אדריכלות פנים",
+      "עיצוב פנים",
+      "מעצב פנים",
+      "מעצבת פנים",
+      "עיצוב חללים",
+      "אדריכל פנים",
+      "interior design",
+      "interior architecture",
+    ],
+    niche: "interior",
+  },
+  {
+    keys: [
       "מוסך",
       "רכב",
       "צמיג",
       "שמנים",
-      "garage"
+      "garage",
     ],
-    "niche": "garage"
+    niche: "garage",
   },
   {
-    "keys": [
+    keys: [
+      "עיצוב שיער",
+      "תספורת",
+      "מספרה",
+      "מספרת",
+      "hair salon",
+      "barber",
+    ],
+    niche: "salon",
+  },
+  {
+    keys: [
+      "עבודות צבע",
+      "צביעת דירות",
+      "צביעת קירות",
+      "צבעי בתים",
+      "טייח",
+      "שיפוץ דירה",
+      "house painter",
+      "plastering",
+    ],
+    niche: "painting",
+  },
+  {
+    keys: [
+      "רואה חשבון",
+      "רואת חשבון",
+      "ייעוץ מס",
+      "יועץ מס",
+      "הנהלת חשבונות",
+      "accountant",
+    ],
+    niche: "accountant",
+  },
+  {
+    keys: ["מנעולן", "מנעולנות", "פתיחת דלתות", "locksmith"],
+    niche: "locksmith",
+  },
+  {
+    keys: [
       "קוסמטיקה",
-      "יופי",
-      "פנים",
+      "מכון יופי",
+      "קליניקה אסתטית",
+      "בוטוקס",
+      "הסרת שיער",
       "ציפורניים",
       "ספא",
-      "beauty"
+      "עור",
+      "beauty",
+      "יופי",
     ],
-    "niche": "cosmetics"
+    niche: "cosmetics",
   },
   {
-    "keys": [
+    keys: [
       "קפה",
       "בית קפה",
       "מאפה",
       "ביסטרו",
       "מסעדה",
-      "cafe"
+      "cafe",
     ],
-    "niche": "cafe"
-  }
+    niche: "cafe",
+  },
 ];
 
 export function parseBusinessInput(raw: string): { businessName: string; city: string } {

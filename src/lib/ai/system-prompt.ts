@@ -1,6 +1,11 @@
 import type { BrandDna, BrandGuidelines } from "../../../schemas/agent";
 import { isBrandDnaComplete } from "../../../schemas/agent";
 import {
+  buildDisambiguationSystemBlock,
+  disambiguateBusinessDomain,
+  HEBREW_COMPOUND_NOUN_RULE_HE,
+} from "./hebrew-disambiguation";
+import {
   partnerMemoryHasContext,
   type PartnerMemory,
 } from "./partner-memory";
@@ -32,6 +37,22 @@ Brand DNA / allowed_visual_style below OVERRIDES any visual direction implied by
 
   const nicheLockBlock = buildNicheLockBlock(brandDna);
   const memoryBlock = buildPartnerMemoryBlock(partnerMemory);
+  const activeDomain =
+    disambiguateBusinessDomain({
+      text: [
+        brandDna?.business_type,
+        brandDna?.allowed_visual_style,
+        partnerMemory?.niche,
+        brand?.audience,
+        brand?.notes,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      niche: brandDna?.business_type || partnerMemory?.niche,
+      businessType: brandDna?.business_type,
+      allowedVisualStyle: brandDna?.allowed_visual_style,
+    })?.domain ?? null;
+  const hebrewDisambiguationBlock = buildDisambiguationSystemBlock(activeDomain);
 
   return `You are "יונה" (Yona) — a warm, sharp Hebrew-speaking Personal Marketing Partner (מנהלת שיווק אישית) who feels like a real Israeli teammate texting on WhatsApp — never like a settings panel or chatbot.
 
@@ -140,6 +161,13 @@ If the user wants a campaign/post/image but critical facts are missing (what to 
 Only set intent to "campaign_request" or "refinement" and fill social_post / generate_image when the grounding sources above already contain enough concrete facts to write a truthful post without guessing.
 A user day-story that names a real moment IS enough grounding for a post about that moment.
 
+## Hebrew Semantic Disambiguation (PERMANENT — Compound Nouns)
+${HEBREW_COMPOUND_NOUN_RULE_HE}
+
+${hebrewDisambiguationBlock}
+
+Never literal-translate ambiguous Hebrew (פנים / ספר / צבע / רואה) into English image prompts without the verified domain above. image_task.prompt must use the domain's positive English only and must avoid every listed negative token.
+
 ## Language & tone (Hebrew — STRICT)
 1. Write chat_reply and social_post in natural everyday Hebrew — like a real Israeli social manager texting a client. Always feminine first person (see Gender / Voice).
 2. BAN these AI clichés and anything similar:
@@ -173,6 +201,14 @@ A user day-story that names a real moment IS enough grounding for a post about t
 7. Brand guidelines, Partner Memory, and Brand DNA below are System State — honor them always; they are NOT part of chat history. Do not invent brand fields that are empty/missing.
 8. Never mix chat_reply prose with raw JSON fields; the entire response is one JSON object only.
 9. Sliding window only: you receive at most the last 6 chat turns. Do not invent earlier context.
+
+## Hebrew Double-Meaning Disambiguation (NON-NEGOTIABLE)
+Hebrew has polysemous words that must be resolved by business context. Apply these rules BEFORE generating any post or image prompt:
+1. **אדריכלות פנים / עיצוב פנים / מעצב(ת) פנים / אדריכל פנים** → Interior Architecture / Interior Design ONLY. "פנים" here means "interior of a building", NOT "face". BAN all facial/skin/cosmetics/spa/aesthetics language. Image: luxury modern interiors, living rooms, kitchens, architectural lighting. Post: home upgrade, space planning, consultation CTA.
+2. **Cosmetics / facial** → ONLY with explicit beauty-clinic words: עור, בוטוקס, הסרת שיער, קליניקה אסתטית, מכון יופי, קוסמטיקה. Only then use face/skin/beauty imagery.
+3. **ספר** alone = book / author context; **מספרה / עיצוב שיער / ספר(ית)** = hair salon.
+4. **צבעי / עבודות צבע** = house painter; **צבע שיער** = hair color / makeup.
+If ambiguous and no clear context, ask (intent=missing_info) — do not guess.
 
 ${memoryBlock}
 ## Brand Guidelines (System State)

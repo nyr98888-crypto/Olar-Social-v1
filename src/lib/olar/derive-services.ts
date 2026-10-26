@@ -5,7 +5,21 @@ import type { ProfileService } from "./business-profile";
 
 type Hint = { keys: string[]; title: string; desc: string };
 
+/**
+ * Interior compound-phrase hints come BEFORE the bare "פנים" cosmetics hint,
+ * so "עיצוב פנים" input produces interior services, not facial treatment.
+ */
+const INTERIOR_HINT_KEYS = [
+  "אדריכלות פנים", "עיצוב פנים", "מעצב פנים", "מעצבת פנים",
+  "עיצוב חללים", "אדריכל פנים",
+];
+
 const HINTS: Hint[] = [
+  {
+    keys: INTERIOR_HINT_KEYS,
+    title: "ייעוץ עיצוב פנים",
+    desc: "פגישת ייעוץ ראשונית — הבנת סגנון וצרכים",
+  },
   {
     keys: ["חורף", "הכנה לחורף", "winter"],
     title: "\u05d4\u05db\u05e0\u05ea \u05e8\u05db\u05d1 \u05dc\u05d7\u05d5\u05e8\u05e3",
@@ -27,7 +41,7 @@ const HINTS: Hint[] = [
     desc: "\u05e9\u05de\u05df + \u05de\u05e1\u05e0\u05df + \u05d1\u05d3\u05d9\u05e7\u05d4 \u05db\u05dc\u05dc\u05d9\u05ea",
   },
   {
-    keys: ["פנים", "facial"],
+    keys: ["טיפול פנים", "facial", "קוסמטיקה"],
     title: "\u05d8\u05d9\u05e4\u05d5\u05dc \u05e4\u05e0\u05d9\u05dd",
     desc: "\u05d8\u05d9\u05e4\u05d5\u05dc \u05de\u05e8\u05e2\u05e0\u05df \u05d1\u05d9\u05d7\u05e1 \u05d0\u05d9\u05e9\u05d9",
   },
@@ -69,6 +83,20 @@ const DEFAULT_BY_NICHE: Record<string, ProfileService[]> = {
       id: "s2",
       title: "\u05d8\u05d9\u05e4\u05d5\u05dc\u05d9 \u05d9\u05d5\u05e4\u05d9",
       desc: "\u05e4\u05e8\u05d8\u05d9\u05dd \u05d5\u05d4\u05e6\u05e2\u05ea \u05de\u05d7\u05d9\u05e8 \u05d1\u05d4\u05d5\u05d3\u05e2\u05d4",
+      price: 0,
+    },
+  ],
+  interior: [
+    {
+      id: "s1",
+      title: "ייעוץ עיצוב פנים",
+      desc: "פגישת ייעוץ ראשונית — הבנת סגנון וצרכים",
+      price: 0,
+    },
+    {
+      id: "s2",
+      title: "תכנון חלל",
+      desc: "תוכנית עיצוב — חומרים, צבעים ותאורה",
       price: 0,
     },
   ],

@@ -5,8 +5,13 @@ import {
   buildFalVisualPrompt,
   falImageSizeForAspect,
   hasHebrewScript,
+  resolvePromptDomain,
   type FalVisualPurpose,
 } from "../fal-visual-prompt";
+import {
+  applyDomainPromptGuardrail,
+  mergeDomainForbidden,
+} from "../hebrew-disambiguation";
 import {
   hasLockedSceneLeak,
   promptsAreTooSimilar,
@@ -15,6 +20,13 @@ import {
 } from "../types";
 import { findForbiddenHits } from "../validator";
 import { withTimeout } from "../with-timeout";
+
+/**
+ * fal-ai/flux/schnell does NOT support `negative_prompt`.
+ * Domain negatives are baked into the English prompt as "avoid: ..."
+ * and kept in Brand DNA forbidden_elements.
+ */
+export const FAL_SUPPORTS_NEGATIVE_PROMPT = false;
 
 const FAL_MODEL = "fal-ai/flux/schnell";
 /**
@@ -117,10 +129,17 @@ export async function generateImageWithFal(opts: {
   ensureFalConfig();
 
   const niche = opts.niche || opts.brandDna?.business_type || null;
+  const domain = resolvePromptDomain(
+    opts.userContext,
+    niche,
+    opts.brandDna?.business_type,
+    opts.brandDna?.allowed_visual_style,
+    opts.prompt
+  );
 
   // Prefer already-English Art Director output; otherwise blueprint merge.
-  // Never pass Hebrew to FAL.
-  const englishPrompt = hasHebrewScript(opts.prompt)
+  // Never pass Hebrew to FAL. Never literal-translate without domain cross-check.
+  let englishPrompt = hasHebrewScript(opts.prompt)
     ? buildFalVisualPrompt({
         niche,
         businessName: opts.businessName,
@@ -130,12 +149,19 @@ export async function generateImageWithFal(opts: {
         allowedVisualStyle: opts.brandDna?.allowed_visual_style,
         purpose: opts.purpose,
       })
-    : applyVisualPromptGuardrail(opts.prompt || "", null);
+    : applyVisualPromptGuardrail(opts.prompt || "", null, domain);
 
-  const preHits = findForbiddenHits(
-    englishPrompt,
-    opts.brandDna?.forbidden_elements
+  // Bake domain avoid: clause (FLUX has no negative_prompt param)
+  if (domain) {
+    englishPrompt = applyDomainPromptGuardrail(englishPrompt, domain);
+  }
+
+  const forbidden = mergeDomainForbidden(
+    opts.brandDna?.forbidden_elements,
+    domain
   );
+
+  const preHits = findForbiddenHits(englishPrompt, forbidden);
   if (preHits.length > 0 && !opts.brandDna?.allowed_visual_style) {
     throw new Error(
       `FAL blocked by Niche Lock (forbidden: ${preHits.join(", ")})`
@@ -149,10 +175,7 @@ export async function generateImageWithFal(opts: {
     opts.brandDna
   );
 
-  const postHits = findForbiddenHits(
-    prompt,
-    opts.brandDna?.forbidden_elements
-  );
+  const postHits = findForbiddenHits(prompt, forbidden);
   if (postHits.length > 0) {
     throw new Error(
       `FAL blocked by Niche Lock after sanitize (forbidden: ${postHits.join(", ")})`
@@ -172,9 +195,12 @@ export async function generateImageWithFal(opts: {
     image_size,
     aspectRatio: opts.aspectRatio ?? "landscape_4_3",
     hasFalKey: Boolean(process.env.FAL_KEY),
+    domain: domain?.id ?? null,
+    negativePromptSupported: FAL_SUPPORTS_NEGATIVE_PROMPT,
   });
   console.log("[FAL] Prompt sent:", prompt);
 
+  // Input: prompt + image_size + seed only — no negative_prompt (unsupported by flux/schnell)
   const result = await withTimeout(
     fal.subscribe(FAL_MODEL, {
       input: {

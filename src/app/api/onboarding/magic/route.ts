@@ -8,12 +8,20 @@ import {
   detectFallbackNiche,
   sanitizeOrGolden,
 } from "@/lib/ai/fallback-content";
+import {
+  buildDisambiguationSystemBlock,
+  disambiguateBusinessDomain,
+  HEBREW_COMPOUND_NOUN_RULE_HE,
+} from "@/lib/ai/hebrew-disambiguation";
 import type { AgentOutput } from "../../../../../schemas/agent";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const MAGIC_SYSTEM = `You are Yona, a Hebrew marketing agent for Israeli local businesses.
+function buildMagicSystem(raw: string): string {
+  const domain =
+    disambiguateBusinessDomain({ text: raw, niche: raw })?.domain ?? null;
+  return `You are Yona, a Hebrew marketing agent for Israeli local businesses.
 Return ONLY valid JSON matching AgentOutputSchema:
 - chat_reply: short Hebrew (first person female)
 - intent: "campaign_request"
@@ -24,11 +32,19 @@ Return ONLY valid JSON matching AgentOutputSchema:
   }
 - image_task: { generate_image: false, aspect_ratio: "1:1", prompt: English visual brief }
 
+## Hebrew Semantic Disambiguation (PERMANENT)
+${HEBREW_COMPOUND_NOUN_RULE_HE}
+
+${buildDisambiguationSystemBlock(domain)}
+
+Never literal-translate ambiguous Hebrew without the verified domain. Image prompt English from verified domain only; bake avoid: negatives into the English brief.
+
 ## HARD NEGATIVE RULES
 - NEVER invent numeric prices (150 ₪, 350 ₪, 99 ₪, etc.) unless the user explicitly provided that price.
 - If no price: has_explicit_price=false; CTA only like "לתיאום והצעת מחיר בוואטסאפ", "פרטים והזמנות בהודעה", "שאל אותנו בוואטסאפ".
 - NEVER invent specific technical services the user did not state (no "החלפת שמן גיר" / "חומצה הילרונית" from vague niches).
 - Ground facts ONLY in the user business description. Image prompt English only; generate_image false for onboarding magic.`;
+}
 
 /**
  * Onboarding "תראה לי את הקסם" — OpenRouter hybrid + 4s/validate/golden pipeline.
@@ -65,12 +81,13 @@ export async function POST(request: Request) {
     }
 
     try {
+      const domainHit = disambiguateBusinessDomain({ text: raw, niche: raw });
       const { output, providerUsed, fallback } = await generateStructuredText(
-        MAGIC_SYSTEM,
+        buildMagicSystem(raw),
         [
           {
             role: "user",
-            content: `Business / onboarding input (Hebrew OK):\n${raw}\n\nCreate a first social post + short chat_reply welcoming them.`,
+            content: `Business / onboarding input (Hebrew OK):\n${raw}\n\nVerified domain (if any): ${domainHit?.domain.englishDomain ?? "unknown"}\nCreate a first social post + short chat_reply welcoming them.`,
           },
         ],
         {
@@ -79,6 +96,7 @@ export async function POST(request: Request) {
           city: body.city,
           phone: body.phone,
           whatsapp: body.whatsapp,
+          niche: domainHit?.domain.nicheId,
         }
       );
       const clean = sanitizeOrGolden(
@@ -125,7 +143,9 @@ function softMagic(
   providerUsed = "fallback:golden-template"
 ) {
   const parsed = parseBizFromRaw(raw);
-  const niche = detectFallbackNiche(raw);
+  const domainHit = disambiguateBusinessDomain({ text: raw, niche: raw });
+  const niche =
+    domainHit?.domain.nicheId || detectFallbackNiche(raw);
   const post = output.social_post;
   return NextResponse.json({
     ok: true,

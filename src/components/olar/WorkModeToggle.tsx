@@ -13,7 +13,7 @@ export function WorkModeToggle({
 }) {
   return (
     <div
-      className="inline-flex max-w-[min(100%,22rem)] shrink items-center gap-1 rounded-full border border-slate-300 bg-white p-1 shadow-md sm:max-w-none"
+      className="inline-flex max-w-[min(100%,22rem)] shrink items-center gap-0.5 rounded-xl border border-slate-800 bg-slate-900/90 p-1 sm:max-w-none"
       role="group"
       aria-label={C.workModeAria}
     >
@@ -21,10 +21,10 @@ export function WorkModeToggle({
         type="button"
         title={C.workModeQuick}
         onClick={() => onChange("quick")}
-        className={`inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-sm font-medium transition sm:px-4 sm:text-base ${
+        className={`inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition sm:px-4 sm:text-base ${
           mode === "quick"
-            ? "bg-accent font-bold text-white shadow-md shadow-sky-600/20"
-            : "text-slate-800 hover:bg-accent-soft"
+            ? "bg-gradient-to-r from-cyan-500 to-blue-500 font-semibold text-white shadow-md shadow-cyan-500/20"
+            : "text-slate-400 hover:text-slate-200"
         }`}
         aria-pressed={mode === "quick"}
       >
@@ -35,10 +35,10 @@ export function WorkModeToggle({
         type="button"
         title={C.workModeFull}
         onClick={() => onChange("full")}
-        className={`inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-sm font-medium transition sm:px-4 sm:text-base ${
+        className={`inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition sm:px-4 sm:text-base ${
           mode === "full"
-            ? "bg-accent font-bold text-white shadow-md shadow-sky-600/20"
-            : "text-slate-800 hover:bg-accent-soft"
+            ? "bg-gradient-to-r from-cyan-500 to-blue-500 font-semibold text-white shadow-md shadow-cyan-500/20"
+            : "text-slate-400 hover:text-slate-200"
         }`}
         aria-pressed={mode === "full"}
       >

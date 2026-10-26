@@ -7,8 +7,10 @@ import type { BrandDna } from "../../../schemas/agent";
 import {
   buildFalVisualPrompt,
   hasHebrewScript,
+  resolvePromptDomain,
   type FalVisualPurpose,
 } from "./fal-visual-prompt";
+import { mergeDomainForbidden } from "./hebrew-disambiguation";
 import { translateToFalEnglishPrompt } from "./translate-visual-prompt";
 import {
   generateImageWithFal,
@@ -16,6 +18,27 @@ import {
 } from "./providers/fal";
 import type { GeneratedImage } from "./types";
 import { withTimeout } from "./with-timeout";
+
+/** Enrich Brand DNA with domain negatives before FAL (FLUX has no negative_prompt). */
+function brandDnaWithDomainNegatives(
+  brandDna: BrandDna | null | undefined,
+  ...sources: Array<string | null | undefined>
+): BrandDna | null {
+  if (!brandDna) return null;
+  const domain = resolvePromptDomain(
+    ...sources,
+    brandDna.business_type,
+    brandDna.allowed_visual_style
+  );
+  if (!domain) return brandDna;
+  return {
+    ...brandDna,
+    forbidden_elements: mergeDomainForbidden(
+      brandDna.forbidden_elements,
+      domain
+    ),
+  };
+}
 
 /** Hard cap matching .cursorrules (~45s) — never block chat forever. */
 const IMAGE_HARD_TIMEOUT_MS = 45_000;
@@ -154,6 +177,13 @@ export async function generateImage(
     hadHebrew: hasHebrewScript(opts.prompt),
   });
 
+  const enrichedDna = brandDnaWithDomainNegatives(
+    opts.brandDna,
+    opts.prompt,
+    opts.userContext,
+    opts.niche
+  );
+
   try {
     const image = await withTimeout(
       generateImageWithFal({
@@ -161,9 +191,9 @@ export async function generateImage(
         aspectRatio: opts.aspectRatio,
         previousPrompt: opts.previousPrompt,
         userContext: opts.userContext,
-        brandDna: opts.brandDna,
+        brandDna: enrichedDna,
         businessName: opts.businessName,
-        niche: opts.niche || opts.brandDna?.business_type,
+        niche: opts.niche || enrichedDna?.business_type || opts.brandDna?.business_type,
         purpose: opts.purpose,
       }),
       IMAGE_HARD_TIMEOUT_MS,
